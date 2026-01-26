@@ -13,6 +13,7 @@ app.use(express.json()); // Permite leer JSON que venga del Frontend
 connectDB();
 
 // 3. Rutas de Prueba (Health Check)
+app.use('/api/auth', require('./src/routes/auth'));
 app.get('/', (req, res) => {
     res.send('🚀 RutAR Backend está funcionando correctamente!');
 });
