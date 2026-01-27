@@ -15,14 +15,12 @@ const UserSchema = new mongoose.Schema({
     lowercase: true
   },
   password: {
-    type: String,
-    required: true
-  },
-  role: {
-    type: String,
-    enum: ['driver', 'admin'],
-    default: 'driver'
-  },
+    type: String },
+  
+  // Agregamos esto para saber que es un usuario de Google
+  googleId: { type: String }, 
+  avatar: { type: String }, // Para guardar la fotito de Google 
+  
   createdAt: {
     type: Date,
     default: Date.now

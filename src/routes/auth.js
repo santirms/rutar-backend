@@ -39,4 +39,41 @@ router.post('/register', async (req, res) => {
   }
 });
 
+router.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // 1. Buscar si el usuario existe
+    let user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ msg: 'Credenciales inválidas' });
+    }
+
+    // 🛡️ SEGURIDAD ANTI-HACKER (La parte clave)
+    // Si el usuario entró con Google, su password en la DB es null o undefined.
+    if (!user.password) {
+      return res.status(400).json({ 
+        msg: 'Este usuario se registró con Google. Por favor, usá el botón de "Continuar con Google".' 
+      });
+    }
+
+    // 2. Verificar la contraseña (Si tiene una)
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ msg: 'Credenciales inválidas' });
+    }
+
+    // 3. Si todo está bien, le devolvemos sus datos (o un Token JWT si usás)
+    res.json({
+      msg: 'Login exitoso',
+      userId: user._id,
+      name: user.name,
+      role: user.role
+    });
+
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Error en el servidor');
+  }
+});
 module.exports = router;
