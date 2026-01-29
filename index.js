@@ -1,48 +1,65 @@
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
-const connectDB = require('./src/config/db.js');
-const { MercadoPagoConfig, PreApproval } = require('mercadopago');
-const admin = require('firebase-admin');
+const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
+const mongoose = require('mongoose'); // <--- IMPORTANTE
+
 const app = express();
+app.use(express.json());
 
-// Middlewares (Configuraciones)
-app.use(cors()); // Permite conexiones desde cualquier lado (luego lo restringimos a tu web)
-app.use(express.json()); // Permite leer JSON que venga del Frontend
+// 1. CONEXIÓN A MONGODB
+// Asegurate de tener MONGO_URI en tus variables de entorno de Render
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log('🍃 MongoDB Conectado'))
+  .catch(err => console.error('Error Mongo:', err));
 
-// Conectar a Base de Datos
-connectDB();
-
-// Rutas de Prueba (Health Check)
-app.use('/api/auth', require('./src/routes/auth'));
-app.get('/', (req, res) => {
-    res.send('🚀 RutAR Backend está funcionando correctamente!');
+// 2. MODELO DE USUARIO (SCHEMA)
+const UserSchema = new mongoose.Schema({
+  uid: String,
+  email: { type: String, unique: true, required: true },
+  displayName: String,
+  isPro: { type: Boolean, default: false }, // Acá guardamos si pagó
+  subscriptionId: String,
+  lastLogin: Date
 });
+const User = mongoose.model('User', UserSchema);
 
-// 1. INICIALIZAR FIREBASE (Usando el archivo secreto)
-// Nota: En local tenés que tener el archivo. En Render, Secret Files lo crea por vos.
-try {
-  const serviceAccount = require('./serviceAccountKey.json');
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log("🔥 Firebase Admin conectado exitosamente");
-} catch (e) {
-  console.error("Error conectando Firebase:", e);
-}
-
-const db = admin.firestore(); // Referencia a la base de datos
-
-// Configurar el Cliente (USÁ TU ACCESS TOKEN DE PRODUCCIÓN O TEST)
+// CONFIG MERCADO PAGO
 const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
 
-// Crear la ruta para generar el cobro
+// ---------------------------------------------------------
+// RUTA 1: SINCRONIZAR USUARIO (Llamada desde Flutter)
+// ---------------------------------------------------------
+app.post('/sync_user', async (req, res) => {
+  const { uid, email, displayName } = req.body;
+
+  try {
+    // Buscamos si existe, si no existe lo crea (upsert)
+    let user = await User.findOne({ email });
+
+    if (!user) {
+      user = new User({ uid, email, displayName, isPro: false });
+      await user.save();
+      console.log(`🆕 Usuario creado en Mongo: ${email}`);
+    } else {
+      // Actualizamos último login
+      user.lastLogin = new Date();
+      await user.save();
+      console.log(`👋 Usuario existente: ${email}`);
+    }
+    
+    res.json({ success: true, isPro: user.isPro });
+  } catch (error) {
+    console.error("Error Mongo Sync:", error);
+    res.status(500).json({ error: "Error de base de datos" });
+  }
+});
+
+// ---------------------------------------------------------
+// RUTA 2: CREAR PREFERENCIA DE PAGO (Suscripción)
+// ---------------------------------------------------------
 app.post('/create_preference', async (req, res) => {
   try {
-    const payerEmail = req.body.email || "test_user_1234@testuser.com"; 
-
-    console.log("📩 Intentando crear suscripción para:", payerEmail);
-
+    const payerEmail = req.body.email || "test_user@test.com"; 
     const preapproval = new PreApproval(client);
 
     const result = await preapproval.create({
@@ -53,35 +70,22 @@ app.post('/create_preference', async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 8999,
+          transaction_amount: 4500,
           currency_id: "ARS"
         },
-        back_url: "https://www.google.com", // Usamos google temporalmente para descartar errores de URL
-        // status: "authorized"  <-- COMENTAMOS ESTO, suele causar error 400
+        back_url: "https://www.google.com", 
       }
     });
-
-    console.log("✅ Éxito! Link generado:", result.init_point);
     res.json({ id: result.id, init_point: result.init_point });
-    
   } catch (error) {
-    // 🔍 LOG MEJORADO PARA VER EL DETALLE REAL
-    console.error("❌ ERROR AL CREAR SUSCRIPCIÓN:");
-    
-    // Intentamos mostrar la 'cause' que es donde MP esconde el detalle
-    if (error.cause) {
-      console.error("DETALLE DEL ERROR (cause):", JSON.stringify(error.cause, null, 2));
-    } else {
-      console.error("ERROR CRUDO:", error);
-    }
-
-    res.status(400).json({ 
-      msg: 'Error creando suscripción', 
-      error_detail: error.cause || error.message 
-    });
+    console.error("❌ MP Error:", error);
+    res.status(400).json({ msg: 'Error', details: error });
   }
 });
 
+// ---------------------------------------------------------
+// RUTA 3: WEBHOOK (Recibe el pago y actualiza Mongo)
+// ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
   const query = req.query;
   const topic = query.topic || query.type; 
@@ -89,54 +93,35 @@ app.post('/webhook', async (req, res) => {
 
   try {
     if (topic === 'payment') {
-      // Consultamos a MP el estado del pago
-      const payment = await new mercadopago.Payment(client).get({ id: id });
-      
+      const payment = await new Payment(client).get({ id: id });
       const status = payment.status;
-      const payerEmail = payment.payer.email; // El mail del que pagó
-      
+      const payerEmail = payment.payer.email; 
+
       console.log(`💰 Pago de: ${payerEmail} | Estado: ${status}`);
 
       if (status === 'approved') {
-        console.log(`✅ PAGO APROBADO. Buscando usuario ${payerEmail} en Firebase...`);
+        console.log(`✅ APROBADO. Actualizando MongoDB para ${payerEmail}...`);
         
-        // --- BUSCAR USUARIO Y DARLE EL PLAN PRO ---
-        
-        // 1. Buscamos en la colección 'users' si existe alguien con ese email
-        // (Asumimos que guardaste los usuarios con el email como campo, o el ID es el email)
-        
-        // OPCIÓN A: Si usás el email como ID del documento (recomendado para empezar)
-        // const userRef = db.collection('users').doc(payerEmail);
-        
-        // OPCIÓN B: Si usás el UID de Auth y el email es un campo interno (lo más común)
-        const usersRef = db.collection('users');
-        const snapshot = await usersRef.where('email', '==', payerEmail).get();
+        // ACTUALIZAMOS EN MONGO DB
+        const updatedUser = await User.findOneAndUpdate(
+          { email: payerEmail }, // Buscamos por mail
+          { isPro: true, subscriptionId: id }, // Ponemos PRO en true
+          { new: true }
+        );
 
-        if (snapshot.empty) {
-          console.log('⚠️ No se encontró usuario con ese email en la BD.');
-          // Opcional: Podrías crearlo o guardarlo en una colección "pagos_huérfanos" para revisar
+        if(updatedUser) {
+           console.log("👑 Usuario actualizado a PRO en la DB!");
         } else {
-          // Actualizamos todos los usuarios con ese mail (debería ser uno solo)
-          snapshot.forEach(async doc => {
-             await doc.ref.update({ 
-               isPro: true,
-               subscriptionDate: new Date(),
-               paymentId: id
-             });
-             console.log(`👑 Usuario ${doc.id} actualizado a PRO!`);
-          });
+           console.log("⚠️ Usuario no encontrado en la DB (Pago huérfano)");
         }
       }
     }
     res.sendStatus(200);
   } catch (error) {
-    console.error("Error en webhook:", error);
+    console.error("Error Webhook:", error);
     res.sendStatus(500);
   }
 });
 
-// Iniciar Servidor
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`📡 Servidor escuchando en puerto ${PORT}`);
-});
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`🚀 Server corriendo en puerto ${port}`));
