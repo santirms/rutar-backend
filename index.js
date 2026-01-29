@@ -2,8 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./src/config/db.js');
-const { MercadoPagoConfig, Preference } = require('mercadopago');
-
+const { MercadoPagoConfig, PreApproval } = require('mercadopago');
 const app = express();
 
 // Middlewares (Configuraciones)
@@ -20,37 +19,35 @@ app.get('/', (req, res) => {
 });
 
 // Configurar el Cliente (USÁ TU ACCESS TOKEN DE PRODUCCIÓN O TEST)
-const client = new MercadoPagoConfig({ accessToken: 'TU_ACCESS_TOKEN_DE_MERCADOPAGO' });
+const client = new MercadoPagoConfig({ accessToken: 'TEST-1871745565650068-012900-cf6c850bb67cab8c0b2514a37c2750f0-3167179678' });
 
 // Crear la ruta para generar el cobro
 app.post('/create_preference', async (req, res) => {
   try {
-    const body = {
-      items: [
-        {
-          title: 'Suscripción RutAR PRO (Mensual)',
-          quantity: 1,
-          unit_price: 4500, // Precio en pesos
-          currency_id: 'ARS',
+    const preapproval = new PreApproval(client);
+
+    const result = await preapproval.create({
+      body: {
+        reason: "Suscripción RutAR PRO",
+        external_reference: "USER_ID_123", // Acá podés pasar el ID de tu usuario para saber quién es
+        payer_email: "test_user_123@testuser.com", // Idealmente el mail del usuario real
+        auto_recurring: {
+          frequency: 1,
+          frequency_type: "months", // Se cobra cada 1 mes
+          transaction_amount: 4500, // Precio mensual
+          currency_id: "ARS"
         },
-      ],
-      back_urls: {
-        success: 'https://tu-web.com/success', // O un deep link a tu app
-        failure: 'https://tu-web.com/failure',
-        pending: 'https://tu-web.com/pending',
-      },
-      auto_return: 'approved',
-    };
+        back_url: "https://www.rutar.com.ar/success", // A donde vuelve después de suscribirse
+        status: "authorized"
+      }
+    });
 
-    const preference = new Preference(client);
-    const result = await preference.create({ body });
-
-    // Devolvemos el ID de la preferencia al celular
-    res.json({ id: result.id });
+    // Devolvemos el link de pago (init_point) al celular
+    res.json({ id: result.id, init_point: result.init_point });
     
   } catch (error) {
     console.log(error);
-    res.status(500).json({ error: 'Error al crear la preferencia' });
+    res.status(500).json({ error: 'Error al crear la suscripción' });
   }
 });
 
