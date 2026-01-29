@@ -19,7 +19,7 @@ app.get('/', (req, res) => {
 });
 
 // Configurar el Cliente (USÁ TU ACCESS TOKEN DE PRODUCCIÓN O TEST)
-const client = new MercadoPagoConfig({ accessToken: 'TEST-1871745565650068-012900-cf6c850bb67cab8c0b2514a37c2750f0-3167179678' });
+const client = new MercadoPagoConfig({ accessToken: 'APP_USR-1871745565650068-012900-2cb29cacfbdc49fccd0a09c70de125ec-3167179678' });
 
 // Crear la ruta para generar el cobro
 app.post('/create_preference', async (req, res) => {
