@@ -65,7 +65,7 @@ app.post('/create_preference', async (req, res) => {
     const result = await preapproval.create({
       body: {
         reason: "Suscripción RutAR PRO",
-        external_reference: "RUTAR_APP_V1",
+        external_reference: payerEmail,
         payer_email: payerEmail, 
         auto_recurring: {
           frequency: 1,
@@ -95,7 +95,8 @@ app.post('/webhook', async (req, res) => {
     if (topic === 'payment') {
       const payment = await new Payment(client).get({ id: id });
       const status = payment.status;
-      const payerEmail = payment.payer.email; 
+      const payerEmail = payment.payer.email;
+      const userEmail = payment.external_reference;
 
       console.log(`💰 Pago de: ${payerEmail} | Estado: ${status}`);
 
@@ -104,7 +105,7 @@ app.post('/webhook', async (req, res) => {
         
         // ACTUALIZAMOS EN MONGO DB
         const updatedUser = await User.findOneAndUpdate(
-          { email: payerEmail }, // Buscamos por mail
+          { email: userEmail }, // Buscamos por mail
           { isPro: true, subscriptionId: id }, // Ponemos PRO en true
           { new: true }
         );
