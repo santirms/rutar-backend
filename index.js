@@ -19,7 +19,7 @@ app.get('/', (req, res) => {
 });
 
 // Configurar el Cliente (USÁ TU ACCESS TOKEN DE PRODUCCIÓN O TEST)
-const client = new MercadoPagoConfig({ accessToken: 'APP_USR-1871745565650068-012900-2cb29cacfbdc49fccd0a09c70de125ec-3167179678' });
+const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
 
 // Crear la ruta para generar el cobro
 app.post('/create_preference', async (req, res) => {
@@ -38,7 +38,7 @@ app.post('/create_preference', async (req, res) => {
         auto_recurring: {
           frequency: 1,
           frequency_type: "months",
-          transaction_amount: 4500,
+          transaction_amount: 8999,
           currency_id: "ARS"
         },
         back_url: "https://www.google.com", // Usamos google temporalmente para descartar errores de URL
