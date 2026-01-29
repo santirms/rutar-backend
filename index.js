@@ -2,23 +2,59 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./src/config/db.js');
+const { MercadoPagoConfig, Preference } = require('mercadopago');
 
 const app = express();
 
-// 1. Middlewares (Configuraciones)
+// Middlewares (Configuraciones)
 app.use(cors()); // Permite conexiones desde cualquier lado (luego lo restringimos a tu web)
 app.use(express.json()); // Permite leer JSON que venga del Frontend
 
-// 2. Conectar a Base de Datos
+// Conectar a Base de Datos
 connectDB();
 
-// 3. Rutas de Prueba (Health Check)
+// Rutas de Prueba (Health Check)
 app.use('/api/auth', require('./src/routes/auth'));
 app.get('/', (req, res) => {
     res.send('🚀 RutAR Backend está funcionando correctamente!');
 });
 
-// 4. Iniciar Servidor
+// Configurar el Cliente (USÁ TU ACCESS TOKEN DE PRODUCCIÓN O TEST)
+const client = new MercadoPagoConfig({ accessToken: 'TU_ACCESS_TOKEN_DE_MERCADOPAGO' });
+
+// Crear la ruta para generar el cobro
+app.post('/create_preference', async (req, res) => {
+  try {
+    const body = {
+      items: [
+        {
+          title: 'Suscripción RutAR PRO (Mensual)',
+          quantity: 1,
+          unit_price: 4500, // Precio en pesos
+          currency_id: 'ARS',
+        },
+      ],
+      back_urls: {
+        success: 'https://tu-web.com/success', // O un deep link a tu app
+        failure: 'https://tu-web.com/failure',
+        pending: 'https://tu-web.com/pending',
+      },
+      auto_return: 'approved',
+    };
+
+    const preference = new Preference(client);
+    const result = await preference.create({ body });
+
+    // Devolvemos el ID de la preferencia al celular
+    res.json({ id: result.id });
+    
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ error: 'Error al crear la preferencia' });
+  }
+});
+
+// Iniciar Servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`📡 Servidor escuchando en puerto ${PORT}`);
