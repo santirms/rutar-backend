@@ -24,33 +24,48 @@ const client = new MercadoPagoConfig({ accessToken: 'TEST-1871745565650068-01290
 // Crear la ruta para generar el cobro
 app.post('/create_preference', async (req, res) => {
   try {
+    // 1. Recibimos el email del usuario desde Flutter
+    // Si viene vacío, usamos uno de prueba válido de MP para que no falle
+    const payerEmail = req.body.email || "test_user_123456@testuser.com"; 
+
+    console.log("Intentando crear suscripción para:", payerEmail);
+
     const preapproval = new PreApproval(client);
 
     const result = await preapproval.create({
       body: {
         reason: "Suscripción RutAR PRO",
-        external_reference: "USER_ID_123", // Acá podés pasar el ID de tu usuario para saber quién es
-        payer_email: "test_user_123@testuser.com", // Idealmente el mail del usuario real
+        external_reference: "RUTAR_APP_V1",
+        payer_email: payerEmail, 
         auto_recurring: {
           frequency: 1,
-          frequency_type: "months", // Se cobra cada 1 mes
-          transaction_amount: 4500, // Precio mensual
+          frequency_type: "months",
+          transaction_amount: 4500,
           currency_id: "ARS"
         },
-        back_url: "https://www.rutar.com.ar/success", // A donde vuelve después de suscribirse
+        // Back URL debe ser una URL válida https
+        back_url: "https://www.mercadopago.com.ar", 
         status: "authorized"
       }
     });
 
-    // Devolvemos el link de pago (init_point) al celular
+    console.log("✅ Suscripción creada exitosamente. ID:", result.id);
+    
+    // Devolvemos el link (init_point) para abrirlo
     res.json({ id: result.id, init_point: result.init_point });
     
   } catch (error) {
-    console.log(error);
-    res.status(500).json({ error: 'Error al crear la suscripción' });
+    // 🔍 ESTO ES LO QUE TE VA A SALVAR LA VIDA
+    // Imprime el error detallado de Mercado Pago en la consola de Render
+    console.error("❌ ERROR MERCADO PAGO:", JSON.stringify(error, null, 2));
+    
+    // Devolvemos el error al celular
+    res.status(400).json({ 
+      msg: 'Error creando suscripción', 
+      details: error.message || error 
+    });
   }
 });
-
 app.post('/webhook', async (req, res) => {
   const payment = req.query;
 
