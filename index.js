@@ -24,11 +24,9 @@ const client = new MercadoPagoConfig({ accessToken: 'TEST-1871745565650068-01290
 // Crear la ruta para generar el cobro
 app.post('/create_preference', async (req, res) => {
   try {
-    // 1. Recibimos el email del usuario desde Flutter
-    // Si viene vacío, usamos uno de prueba válido de MP para que no falle
-    const payerEmail = req.body.email || "test_user_123456@testuser.com"; 
+    const payerEmail = req.body.email || "test_user_1234@testuser.com"; 
 
-    console.log("Intentando crear suscripción para:", payerEmail);
+    console.log("📩 Intentando crear suscripción para:", payerEmail);
 
     const preapproval = new PreApproval(client);
 
@@ -43,29 +41,32 @@ app.post('/create_preference', async (req, res) => {
           transaction_amount: 4500,
           currency_id: "ARS"
         },
-        // Back URL debe ser una URL válida https
-        back_url: "https://www.mercadopago.com.ar", 
-        status: "authorized"
+        back_url: "https://www.google.com", // Usamos google temporalmente para descartar errores de URL
+        // status: "authorized"  <-- COMENTAMOS ESTO, suele causar error 400
       }
     });
 
-    console.log("✅ Suscripción creada exitosamente. ID:", result.id);
-    
-    // Devolvemos el link (init_point) para abrirlo
+    console.log("✅ Éxito! Link generado:", result.init_point);
     res.json({ id: result.id, init_point: result.init_point });
     
   } catch (error) {
-    // 🔍 ESTO ES LO QUE TE VA A SALVAR LA VIDA
-    // Imprime el error detallado de Mercado Pago en la consola de Render
-    console.error("❌ ERROR MERCADO PAGO:", JSON.stringify(error, null, 2));
+    // 🔍 LOG MEJORADO PARA VER EL DETALLE REAL
+    console.error("❌ ERROR AL CREAR SUSCRIPCIÓN:");
     
-    // Devolvemos el error al celular
+    // Intentamos mostrar la 'cause' que es donde MP esconde el detalle
+    if (error.cause) {
+      console.error("DETALLE DEL ERROR (cause):", JSON.stringify(error.cause, null, 2));
+    } else {
+      console.error("ERROR CRUDO:", error);
+    }
+
     res.status(400).json({ 
       msg: 'Error creando suscripción', 
-      details: error.message || error 
+      error_detail: error.cause || error.message 
     });
   }
 });
+
 app.post('/webhook', async (req, res) => {
   const payment = req.query;
 
