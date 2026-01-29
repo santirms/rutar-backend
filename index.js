@@ -54,6 +54,22 @@ app.post('/create_preference', async (req, res) => {
   }
 });
 
+app.post('/webhook', async (req, res) => {
+  const payment = req.query;
+
+  if (payment.type === 'payment') {
+    const paymentId = payment['data.id'];
+    console.log(`💰 Pago recibido ID: ${paymentId}`);
+    
+    // ACÁ ES DONDE ACTIVÁS EL PLAN PRO EN TU BASE DE DATOS
+    // 1. Buscar el pago en MP para ver quién pagó (email).
+    // 2. Buscar ese email en tu Mongo DB.
+    // 3. Actualizar user.isPro = true;
+  }
+
+  res.sendStatus(200); // Responder OK a Mercado Pago
+});
+
 // Iniciar Servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
