@@ -20,6 +20,17 @@ const UserSchema = new mongoose.Schema({
   isPro: { type: Boolean, default: false }, // Acá guardamos si pagó
   subscriptionId: String,
   lastLogin: Date
+  // 🏠 NUEVO: Dirección de Casa
+  homeAddress: {
+    description: String, // Ej: "Av. Corrientes 1234"
+    lat: Number,
+    lng: Number
+  },
+
+  // 📊 NUEVO: Control de Límites
+  planType: { type: String, default: 'free' }, // 'free', 'pro', 'black'
+  dailyOptimizations: { type: Number, default: 0 },
+  lastOptimizationDate: Date
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -121,6 +132,17 @@ app.post('/webhook', async (req, res) => {
   } catch (error) {
     console.error("Error Webhook:", error);
     res.sendStatus(500);
+  }
+});
+
+app.post('/update_profile', async (req, res) => {
+  const { email, homeAddress } = req.body;
+  try {
+    // Upsert: Si existe actualiza, si no (raro) no hace nada
+    await User.findOneAndUpdate({ email }, { homeAddress });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
