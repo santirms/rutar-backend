@@ -117,7 +117,12 @@ app.post('/webhook', async (req, res) => {
         // ACTUALIZAMOS EN MONGO DB
         const updatedUser = await User.findOneAndUpdate(
           { email: userEmail }, // Buscamos por mail
-          { isPro: true, subscriptionId: id }, // Ponemos PRO en true
+          { 
+            isPro: true, 
+            planType: 'pro', 
+            subscriptionId: id,
+            updatedAt: new Date()
+          }, // Ponemos PRO en true
           { new: true }
         );
 
