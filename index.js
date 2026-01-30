@@ -19,7 +19,7 @@ const UserSchema = new mongoose.Schema({
   displayName: String,
   isPro: { type: Boolean, default: false }, // Acá guardamos si pagó
   subscriptionId: String,
-  lastLogin: Date
+  lastLogin: Date,
   // 🏠 NUEVO: Dirección de Casa
   homeAddress: {
     description: String, // Ej: "Av. Corrientes 1234"
