@@ -1,13 +1,14 @@
 require('dotenv').config();
 const express = require('express');
-const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
-const mongoose = require('mongoose'); // <--- IMPORTANTE
+const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+const mongoose = require('mongoose');
+const cors = require('cors'); // Recomendado si llamás desde web, opcional si solo es app/webhook
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 // 1. CONEXIÓN A MONGODB
-// Asegurate de tener MONGO_URI en tus variables de entorno de Render
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('🍃 MongoDB Conectado'))
   .catch(err => console.error('Error Mongo:', err));
@@ -17,20 +18,16 @@ const UserSchema = new mongoose.Schema({
   uid: String,
   email: { type: String, unique: true, required: true },
   displayName: String,
-  isPro: { type: Boolean, default: false }, // Acá guardamos si pagó
+  isPro: { type: Boolean, default: false },
   subscriptionId: String,
   lastLogin: Date,
-  // 🏠 NUEVO: Dirección de Casa
   homeAddress: {
-    description: String, // Ej: "Av. Corrientes 1234"
+    description: String,
     lat: Number,
     lng: Number
   },
-
-  // 📊 NUEVO: Control de Límites
   planType: { type: String, default: 'free' }, // 'free', 'pro', 'black'
-  dailyOptimizations: { type: Number, default: 0 },
-  lastOptimizationDate: Date
+  updatedAt: Date
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -44,7 +41,6 @@ app.post('/sync_user', async (req, res) => {
   const { uid, email, displayName } = req.body;
 
   try {
-    // Buscamos si existe, si no existe lo crea (upsert)
     let user = await User.findOne({ email });
 
     if (!user) {
@@ -52,13 +48,20 @@ app.post('/sync_user', async (req, res) => {
       await user.save();
       console.log(`🆕 Usuario creado en Mongo: ${email}`);
     } else {
-      // Actualizamos último login
       user.lastLogin = new Date();
+      // Si el UID cambió (raro, pero pasa si reinstalan), lo actualizamos
+      if (uid && user.uid !== uid) user.uid = uid;
       await user.save();
       console.log(`👋 Usuario existente: ${email}`);
     }
     
-    res.json({ success: true, isPro: user.isPro });
+    // Devolvemos el estado real del plan
+    res.json({ 
+        success: true, 
+        isPro: user.isPro, 
+        planType: user.planType,
+        homeAddress: user.homeAddress 
+    });
   } catch (error) {
     console.error("Error Mongo Sync:", error);
     res.status(500).json({ error: "Error de base de datos" });
@@ -66,84 +69,77 @@ app.post('/sync_user', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 2: CREAR PREFERENCIA DE PAGO (Suscripción)
-// ---------------------------------------------------------
-app.post('/create_preference', async (req, res) => {
-  try {
-    const payerEmail = req.body.email || "test_user@test.com"; 
-    const preapproval = new PreApproval(client);
-
-    const result = await preapproval.create({
-      body: {
-        reason: "Suscripción RutAR PRO",
-        external_reference: payerEmail,
-        payer_email: payerEmail, 
-        auto_recurring: {
-          frequency: 1,
-          frequency_type: "months",
-          transaction_amount: 4500,
-          currency_id: "ARS"
-        },
-        back_url: "https://www.google.com", 
-      }
-    });
-    res.json({ id: result.id, init_point: result.init_point });
-  } catch (error) {
-    console.error("❌ MP Error:", error);
-    res.status(400).json({ msg: 'Error', details: error });
-  }
-});
-
-// ---------------------------------------------------------
-// RUTA 3: WEBHOOK (Recibe el pago y actualiza Mongo)
+// RUTA 2: WEBHOOK (EL CEREBRO DE LAS SUSCRIPCIONES 🧠)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
-  const query = req.query;
-  const topic = query.topic || query.type; 
-  const id = query.id || query['data.id'];
+    const { type, data } = req.body;
 
-  try {
-    if (topic === 'payment') {
-      const payment = await new Payment(client).get({ id: id });
-      const status = payment.status;
-      const payerEmail = payment.payer.email;
-      const userEmail = payment.external_reference;
+    try {
+        // Solo nos interesa si es una suscripción (preapproval)
+        if (type === 'subscription_preapproval') {
+            
+            // 1. Preguntamos a MP los detalles de esta suscripción
+            const preapproval = new PreApproval(client);
+            const sub = await preapproval.get({ id: data.id });
+            
+            const status = sub.status;       // 'authorized' = activo
+            const payerEmail = sub.payer_email; // El mail de quien pagó
+            const reason = sub.reason;       // Ej: "Suscripción RutAR PRO"
 
-      console.log(`💰 Pago de: ${payerEmail} | Estado: ${status}`);
+            console.log(`🔔 Webhook recibido: ${payerEmail} | Plan: ${reason} | Estado: ${status}`);
 
-      if (status === 'approved') {
-        console.log(`✅ APROBADO. Actualizando MongoDB para ${payerEmail}...`);
-        
-        // ACTUALIZAMOS EN MONGO DB
-        const updatedUser = await User.findOneAndUpdate(
-          { email: userEmail }, // Buscamos por mail
-          { 
-            isPro: true, 
-            planType: 'pro', 
-            subscriptionId: id,
-            updatedAt: new Date()
-          }, // Ponemos PRO en true
-          { new: true }
-        );
+            if (status === 'authorized') {
+                // 2. Determinamos si es PRO o BLACK según el nombre del plan
+                let nuevoPlan = 'pro';
+                if (reason && reason.toUpperCase().includes('BLACK')) {
+                    nuevoPlan = 'black';
+                }
 
-        if(updatedUser) {
-           console.log("👑 Usuario actualizado a PRO en la DB!");
-        } else {
-           console.log("⚠️ Usuario no encontrado en la DB (Pago huérfano)");
+                // 3. Buscamos al usuario en Mongo por su EMAIL y actualizamos
+                const updatedUser = await User.findOneAndUpdate(
+                    { email: payerEmail }, 
+                    { 
+                        isPro: true, 
+                        planType: nuevoPlan, 
+                        subscriptionId: data.id,
+                        updatedAt: new Date()
+                    },
+                    { new: true } // Para que devuelva el doc actualizado
+                );
+
+                if (updatedUser) {
+                    console.log(`✅ ¡ÉXITO! Usuario ${payerEmail} actualizado a ${nuevoPlan.toUpperCase()}.`);
+                } else {
+                    console.error(`⚠️ ALERTA: Pago recibido de ${payerEmail} pero NO existe en la App. (Posible email distinto)`);
+                }
+            }
+            
+            // (Opcional) Si el estado es 'cancelled', podrías poner isPro: false
+            if (status === 'cancelled') {
+                 await User.findOneAndUpdate(
+                    { email: payerEmail }, 
+                    { isPro: false, planType: 'free' }
+                );
+                console.log(`❌ Suscripción cancelada para ${payerEmail}`);
+            }
         }
-      }
+
+        // Siempre responder 200 a Mercado Pago para que no reintente
+        res.sendStatus(200);
+
+    } catch (error) {
+        console.error("❌ Error en Webhook:", error);
+        // Respondemos 200 igual para evitar bucles de error con MP, pero logueamos el error
+        res.sendStatus(200);
     }
-    res.sendStatus(200);
-  } catch (error) {
-    console.error("Error Webhook:", error);
-    res.sendStatus(500);
-  }
 });
 
+// ---------------------------------------------------------
+// RUTA 3: GUARDAR DIRECCIÓN DE CASA
+// ---------------------------------------------------------
 app.post('/update_profile', async (req, res) => {
   const { email, homeAddress } = req.body;
   try {
-    // Upsert: Si existe actualiza, si no (raro) no hace nada
     await User.findOneAndUpdate({ email }, { homeAddress });
     res.json({ success: true });
   } catch (e) {
@@ -152,4 +148,4 @@ app.post('/update_profile', async (req, res) => {
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`🚀 Server corriendo en puerto ${port}`));
+app.listen(port, () => console.log(`🚀 Server RutAR corriendo en puerto ${port}`));
