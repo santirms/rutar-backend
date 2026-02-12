@@ -35,27 +35,36 @@ const User = mongoose.model('User', UserSchema);
 const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
 
 // ---------------------------------------------------------
-// RUTA 1: SINCRONIZAR USUARIO (Llamada desde Flutter)
+// RUTA 1: SINCRONIZAR USUARIO (Vinculación Inteligente)
 // ---------------------------------------------------------
 app.post('/sync_user', async (req, res) => {
-  const { uid, email, displayName } = req.body;
+  const { uid, email, displayName, photoURL } = req.body;
 
   try {
     let user = await User.findOne({ email });
 
     if (!user) {
+      // CASO 1: Usuario nuevo total (No pagó, no existe) -> Lo creamos Free
       user = new User({ uid, email, displayName, isPro: false });
       await user.save();
-      console.log(`🆕 Usuario creado en Mongo: ${email}`);
+      console.log(`🆕 Nuevo usuario App: ${email}`);
     } else {
+      // CASO 2: Usuario que ya existía (O lo creó el Webhook antes)
+      console.log(`👋 Usuario reconocido: ${email}`);
+      
+      // Si el usuario fue creado por el Webhook, no tenía UID. Se lo ponemos ahora.
+      if (!user.uid) {
+          user.uid = uid;
+          user.displayName = displayName || user.displayName;
+          console.log(`🔗 ¡Cuenta Web vinculada con App exitosamente!`);
+      }
+      
+      // Actualizamos datos básicos siempre
       user.lastLogin = new Date();
-      // Si el UID cambió (raro, pero pasa si reinstalan), lo actualizamos
-      if (uid && user.uid !== uid) user.uid = uid;
       await user.save();
-      console.log(`👋 Usuario existente: ${email}`);
     }
     
-    // Devolvemos el estado real del plan
+    // Devolvemos el estado REAL (Si el webhook lo puso PRO, acá devolvemos true)
     res.json({ 
         success: true, 
         isPro: user.isPro, 
@@ -69,67 +78,59 @@ app.post('/sync_user', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 2: WEBHOOK (EL CEREBRO DE LAS SUSCRIPCIONES 🧠)
+// RUTA 2: WEBHOOK (Con lógica de Pre-Creación)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
 
     try {
-        // Solo nos interesa si es una suscripción (preapproval)
         if (type === 'subscription_preapproval') {
-            
-            // 1. Preguntamos a MP los detalles de esta suscripción
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
             
-            const status = sub.status;       // 'authorized' = activo
-            const payerEmail = sub.payer_email; // El mail de quien pagó
-            const reason = sub.reason;       // Ej: "Suscripción RutAR PRO"
+            // Debug: Si el mail viene vacío, esto nos va a mostrar qué está llegando
+            if (!sub.payer_email) console.log("DATAZO MP:", JSON.stringify(sub, null, 2));
 
-            console.log(`🔔 Webhook recibido: ${payerEmail} | Plan: ${reason} | Estado: ${status}`);
+            const status = sub.status;      
+            const payerEmail = sub.payer_email; 
+            const reason = sub.reason;      
 
-            if (status === 'authorized') {
-                // 2. Determinamos si es PRO o BLACK según el nombre del plan
+            console.log(`🔔 Webhook: ${payerEmail} | Estado: ${status}`);
+
+            if (status === 'authorized' && payerEmail) {
                 let nuevoPlan = 'pro';
-                if (reason && reason.toUpperCase().includes('BLACK')) {
-                    nuevoPlan = 'black';
-                }
+                if (reason && reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
 
-                // 3. Buscamos al usuario en Mongo por su EMAIL y actualizamos
-                const updatedUser = await User.findOneAndUpdate(
-                    { email: payerEmail }, 
-                    { 
-                        isPro: true, 
-                        planType: nuevoPlan, 
-                        subscriptionId: data.id,
-                        updatedAt: new Date()
-                    },
-                    { new: true } // Para que devuelva el doc actualizado
-                );
+                // 1. Buscamos si el usuario YA existe
+                let user = await User.findOne({ email: payerEmail });
 
-                if (updatedUser) {
-                    console.log(`✅ ¡ÉXITO! Usuario ${payerEmail} actualizado a ${nuevoPlan.toUpperCase()}.`);
+                if (user) {
+                    // CASO A: El usuario ya usaba la app -> Lo actualizamos
+                    user.isPro = true;
+                    user.planType = nuevoPlan;
+                    user.subscriptionId = data.id;
+                    user.updatedAt = new Date();
+                    await user.save();
+                    console.log(`✅ Usuario existente ${payerEmail} actualizado a PRO.`);
                 } else {
-                    console.error(`⚠️ ALERTA: Pago recibido de ${payerEmail} pero NO existe en la App. (Posible email distinto)`);
+                    // CASO B (EL TUYO): Pagó desde la web y nunca entró a la app -> LO CREAMOS
+                    const newUser = new User({
+                        uid: null, // Todavía no tiene UID de Firebase
+                        email: payerEmail,
+                        displayName: 'Usuario Web (Pendiente)', // Nombre temporal
+                        isPro: true,
+                        planType: nuevoPlan,
+                        subscriptionId: data.id,
+                        createdAt: new Date()
+                    });
+                    await newUser.save();
+                    console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}. Esperando que baje la app...`);
                 }
-            }
-            
-            // (Opcional) Si el estado es 'cancelled', podrías poner isPro: false
-            if (status === 'cancelled') {
-                 await User.findOneAndUpdate(
-                    { email: payerEmail }, 
-                    { isPro: false, planType: 'free' }
-                );
-                console.log(`❌ Suscripción cancelada para ${payerEmail}`);
             }
         }
-
-        // Siempre responder 200 a Mercado Pago para que no reintente
         res.sendStatus(200);
-
     } catch (error) {
         console.error("❌ Error en Webhook:", error);
-        // Respondemos 200 igual para evitar bucles de error con MP, pero logueamos el error
         res.sendStatus(200);
     }
 });
