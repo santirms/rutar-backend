@@ -4,6 +4,10 @@ const { MercadoPagoConfig, PreApproval } = require('mercadopago');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
+// --- IMPORTAMOS LOS MODELOS ---
+// Asegurate de que Stop.js esté en la carpeta models
+const Stop = require('./models/Stop'); 
+
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -21,16 +25,17 @@ const UserSchema = new mongoose.Schema({
   isPro: { type: Boolean, default: false },
   subscriptionId: String,
   lastLogin: Date,
-  homeAddress: {
-    description: String,
-    lat: Number,
-    lng: Number
-  },
+  homeAddress: { description: String, lat: Number, lng: Number },
+  
+  // CONTROL DE LÍMITES
   planType: { type: String, default: 'free' },
+  dailyOptimizations: { type: Number, default: 0 },
+  lastOptimizationDate: Date,
+  
   updatedAt: Date,
   createdAt: Date,
   
-  // --- NUEVO: ESTADÍSTICAS ---
+  // ESTADÍSTICAS RÁPIDAS
   stats: {
     delivered: { type: Number, default: 0 },
     failed: { type: Number, default: 0 }
@@ -42,8 +47,13 @@ const User = mongoose.model('User', UserSchema);
 // CONFIG MERCADO PAGO
 const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN });
 
+
+// ==========================================
+//              RUTAS (ENDPOINTS)
+// ==========================================
+
 // ---------------------------------------------------------
-// RUTA 1: SINCRONIZAR USUARIO (Vinculación Inteligente)
+// RUTA 1: SINCRONIZAR USUARIO (Login / Inicio)
 // ---------------------------------------------------------
 app.post('/sync_user', async (req, res) => {
   const { uid, email, displayName, photoURL } = req.body;
@@ -52,39 +62,25 @@ app.post('/sync_user', async (req, res) => {
     let user = await User.findOne({ email });
 
     if (!user) {
-      // CASO 1: Usuario nuevo total (No pagó, no existe) -> Lo creamos Free
       user = new User({ 
-          uid, 
-          email, 
-          displayName, 
-          isPro: false,
-          stats: { delivered: 0, failed: 0 } // Inicializamos stats
+          uid, email, displayName, isPro: false,
+          stats: { delivered: 0, failed: 0 }
       });
       await user.save();
-      console.log(`🆕 Nuevo usuario App: ${email}`);
+      console.log(`🆕 Nuevo usuario: ${email}`);
     } else {
-      // CASO 2: Usuario que ya existía (O lo creó el Webhook antes)
-      console.log(`👋 Usuario reconocido: ${email}`);
-      
-      // Si el usuario fue creado por el Webhook, no tenía UID. Se lo ponemos ahora.
-      if (!user.uid) {
-          user.uid = uid;
-          user.displayName = displayName || user.displayName;
-          console.log(`🔗 ¡Cuenta Web vinculada con App exitosamente!`);
-      }
-      
-      // Actualizamos datos básicos siempre
+      if (!user.uid) { user.uid = uid; user.displayName = displayName || user.displayName; }
       user.lastLogin = new Date();
       await user.save();
+      console.log(`👋 Usuario sync: ${email}`);
     }
     
-    // Devolvemos el estado REAL + LAS ESTADÍSTICAS
     res.json({ 
         success: true, 
         isPro: user.isPro, 
         planType: user.planType,
         homeAddress: user.homeAddress,
-        stats: user.stats || { delivered: 0, failed: 0 } // <--- ESTO ES IMPORTANTE PARA TU PERFIL
+        stats: user.stats || { delivered: 0, failed: 0 }
     });
   } catch (error) {
     console.error("Error Mongo Sync:", error);
@@ -93,85 +89,142 @@ app.post('/sync_user', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 2: WEBHOOK (Alta y Baja automática)
+// RUTA 2: GUARDAR ENTREGA (HISTORIAL + ESTADÍSTICAS) 🚛 ✅
+// ---------------------------------------------------------
+// OJO: En la App asegurate de llamar a este nombre: /report_delivery
+app.post('/report_delivery', async (req, res) => {
+    // Recibimos más datos para el historial
+    const { email, uid, status, address, lat, lng } = req.body; 
+
+    try {
+        // 1. GUARDAR EL DETALLE EN LA COLECCIÓN 'stops' (Historial)
+        if (uid && address) {
+            const newStop = new Stop({
+                driverUid: uid,
+                address: address,
+                lat: lat || 0,
+                lng: lng || 0,
+                status: status, // 'DONE' o 'FAILED'
+                timestamp: new Date()
+            });
+            await newStop.save();
+            console.log(`📝 Parada guardada en historial: ${address}`);
+        }
+
+        // 2. ACTUALIZAR CONTADOR EN EL USUARIO (Perfil Rápido)
+        const updateField = status === 'DONE' ? 'stats.delivered' : 'stats.failed';
+        await User.findOneAndUpdate(
+            { email },
+            { $inc: { [updateField]: 1 } } 
+        );
+        
+        console.log(`📊 Contador actualizado para ${email}: ${status}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Error reportando entrega:", error);
+        res.status(500).json({ error: "Error de servidor" });
+    }
+});
+
+// ---------------------------------------------------------
+// RUTA 3: CONTROL DE LÍMITES (OPTIMIZACIONES) 🚧
+// ---------------------------------------------------------
+app.post('/check_optimization', async (req, res) => {
+    const { email } = req.body;
+
+    try {
+        const user = await User.findOne({ email });
+        if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+        if (user.isPro) {
+            return res.json({ allowed: true, msg: "Usuario PRO ilimitado" });
+        }
+
+        const hoy = new Date();
+        const ultimoUso = user.lastOptimizationDate ? new Date(user.lastOptimizationDate) : null;
+
+        // Verificar si es el mismo día
+        const esMismoDia = ultimoUso && 
+                           hoy.getDate() === ultimoUso.getDate() && 
+                           hoy.getMonth() === ultimoUso.getMonth() && 
+                           hoy.getFullYear() === ultimoUso.getFullYear();
+
+        if (!esMismoDia) user.dailyOptimizations = 0;
+
+        // Límite: 1 por día para FREE
+        if (user.dailyOptimizations >= 1) {
+            return res.json({ allowed: false, msg: "Límite diario alcanzado." });
+        }
+
+        user.dailyOptimizations += 1;
+        user.lastOptimizationDate = new Date();
+        await user.save();
+
+        console.log(`📉 Optimización usada por ${email}. Total hoy: ${user.dailyOptimizations}`);
+        res.json({ allowed: true, usage: user.dailyOptimizations });
+
+    } catch (error) {
+        console.error("Check Optimization Error:", error);
+        res.status(500).json({ error: "Error" });
+    }
+});
+
+// ---------------------------------------------------------
+// RUTA 4: WEBHOOK (Suscripciones)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
-
     try {
         if (type === 'subscription_preapproval') {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
-            
-            if (!sub.payer_email) console.log("DATAZO MP:", JSON.stringify(sub, null, 2));
-
             const status = sub.status;      
             const payerEmail = sub.payer_email; 
             const reason = sub.reason;      
 
             console.log(`🔔 Webhook: ${payerEmail} | Estado: ${status}`);
 
-            // CASO 1: ALTA DE SUSCRIPCIÓN (Authorized)
+            // ALTA
             if (status === 'authorized' && payerEmail) {
                 let nuevoPlan = 'pro';
                 if (reason && reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
 
-                // Buscamos si el usuario YA existe
                 let user = await User.findOne({ email: payerEmail });
-
                 if (user) {
-                    // Usuario existente -> Lo hacemos PRO
                     user.isPro = true;
                     user.planType = nuevoPlan;
                     user.subscriptionId = data.id;
                     user.updatedAt = new Date();
                     await user.save();
-                    console.log(`✅ Usuario existente ${payerEmail} actualizado a PRO.`);
                 } else {
-                    // Usuario Web (No tiene App aún) -> Lo PRE-CREAMOS
                     const newUser = new User({
-                        uid: null, 
-                        email: payerEmail,
-                        displayName: 'Usuario Web (Pendiente)', 
-                        isPro: true,
-                        planType: nuevoPlan,
-                        subscriptionId: data.id,
-                        createdAt: new Date(),
-                        stats: { delivered: 0, failed: 0 }
+                        uid: null, email: payerEmail, displayName: 'Usuario Web', 
+                        isPro: true, planType: nuevoPlan, subscriptionId: data.id,
+                        createdAt: new Date(), stats: { delivered: 0, failed: 0 }
                     });
                     await newUser.save();
-                    console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}`);
                 }
+                console.log(`✅ ${payerEmail} ahora es PRO`);
             }
 
-            // CASO 2: BAJA DE SUSCRIPCIÓN (Cancelled o Paused)
+            // BAJA
             if ((status === 'cancelled' || status === 'paused') && payerEmail) {
-                const userBaja = await User.findOneAndUpdate(
+                await User.findOneAndUpdate(
                     { email: payerEmail },
-                    { 
-                        isPro: false, 
-                        planType: 'free',
-                        updatedAt: new Date()
-                    },
-                    { new: true }
+                    { isPro: false, planType: 'free', updatedAt: new Date() }
                 );
-
-                if (userBaja) {
-                    console.log(`❌ Suscripción cancelada/pausada para ${payerEmail}. Vuelve a FREE.`);
-                } else {
-                    console.log(`⚠️ Llegó baja para ${payerEmail} pero el usuario no existe en la DB.`);
-                }
+                console.log(`❌ ${payerEmail} volvió a FREE`);
             }
         }
         res.sendStatus(200);
     } catch (error) {
-        console.error("❌ Error en Webhook:", error);
+        console.error("Webhook Error:", error);
         res.sendStatus(200);
     }
 });
 
 // ---------------------------------------------------------
-// RUTA 3: GUARDAR DIRECCIÓN DE CASA
+// RUTA 5: UPDATE PROFILE
 // ---------------------------------------------------------
 app.post('/update_profile', async (req, res) => {
   const { email, homeAddress } = req.body;
@@ -181,28 +234,6 @@ app.post('/update_profile', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
-});
-
-// ---------------------------------------------------------
-// RUTA 4: REPORTAR ENTREGA (NUEVO) 📊
-// ---------------------------------------------------------
-app.post('/report_delivery', async (req, res) => {
-    const { email, status } = req.body; // status: 'DONE' o 'FAILED'
-
-    try {
-        const updateField = status === 'DONE' ? 'stats.delivered' : 'stats.failed';
-        
-        await User.findOneAndUpdate(
-            { email },
-            { $inc: { [updateField]: 1 } } // Incrementa +1
-        );
-        
-        console.log(`📊 Stats actualizadas para ${email}: ${status}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error("Error reportando entrega:", error);
-        res.status(500).json({ error: "Error de servidor" });
-    }
 });
 
 const port = process.env.PORT || 3000;
