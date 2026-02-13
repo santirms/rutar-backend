@@ -5,8 +5,8 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 
 // 👇 1. IMPORTAMOS TU CONTROLADOR (Aquí está la magia)
-const userController = require('../controllers/userController');
-const User = require('../models/User'); // Asegurate de tener el modelo User también importado si usas lógica inline
+const userController = require('./src/controllers/userController');
+const User = require('./src/models/User'); // Asegurate de tener el modelo User también importado si usas lógica inline
 
 const app = express();
 app.use(express.json());
