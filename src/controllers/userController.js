@@ -1,44 +1,55 @@
-// controllers/userController.js
 const mongoose = require('mongoose');
-const User = require('../models/User'); // Asegurate de que esta ruta sea correcta
-const Stop = require('../models/Stop'); 
+const User = require('../models/User'); // Asegurate de que la ruta sea correcta
+const Stop = require('../models/Stop');
 
-// 1. FUNCIÓN PARA GUARDAR UNA ENTREGA (La app llamará a esto al finalizar)
+// 1. FUNCIÓN PARA GUARDAR UNA ENTREGA
 const saveStop = async (req, res) => {
   try {
-    // AHORA PEDIMOS TAMBIÉN EL EMAIL PARA PODER ACTUALIZAR EL PERFIL
+    // RECIBIMOS EL EMAIL DESDE LA APP
     const { uid, email, address, lat, lng, status } = req.body;
 
+    // Validación básica
     if (!uid || !status) {
       return res.status(400).json({ ok: false, msg: 'Faltan datos' });
     }
+    
+    // Debug: Ver en la consola de Render qué está llegando
+    console.log("📨 Datos recibidos en save_stop:", { email, status, address });
 
-    // A. GUARDAR EN EL HISTORIAL (Colección 'stops')
+    // A. GUARDAR EN EL HISTORIAL (Esto ya lo hacías)
     const newStop = new Stop({
       driverUid: uid,
-      address: address || "Sin dirección", // Evitamos error si viene vacío
+      address: address || "Sin dirección",
       lat: lat || 0,
       lng: lng || 0,
-      status: status // 'DONE' o 'FAILED'
+      status: status
     });
-
     await newStop.save();
 
-    // B. ACTUALIZAR ESTADÍSTICAS DEL USUARIO (Colección 'users')
-    // Esto es lo nuevo que faltaba 👇
+    // B. ACTUALIZAR ESTADÍSTICAS DEL USUARIO (ESTO ES LO QUE FALTA) 🚨
     if (email) {
         const updateField = status === 'DONE' ? 'stats.delivered' : 'stats.failed';
         
-        await User.findOneAndUpdate(
+        // Buscamos al usuario por email y le sumamos 1
+        const usuarioActualizado = await User.findOneAndUpdate(
             { email: email },
-            { $inc: { [updateField]: 1 } } // Sumamos +1 al contador
+            { $inc: { [updateField]: 1 } }, // $inc suma 1
+            { new: true } // Para que nos devuelva el usuario actualizado en la variable
         );
-        console.log(`📊 Stats actualizadas para ${email}: ${status}`);
+        
+        if (usuarioActualizado) {
+             console.log(`📊 Stats actualizadas. Entregados: ${usuarioActualizado.stats.delivered}`);
+        } else {
+             console.log(`⚠️ No se encontró usuario con email: ${email}`);
+        }
+    } else {
+        console.log("⚠️ No llegó el email desde la App, no se pueden actualizar stats.");
     }
 
-    res.json({ ok: true, msg: 'Parada y estadísticas guardadas' });
+    res.json({ ok: true, msg: 'Parada guardada y procesada' });
+
   } catch (error) {
-    console.error(error);
+    console.error("Error en saveStop:", error);
     res.status(500).json({ ok: false, msg: 'Error al guardar parada' });
   }
 };
