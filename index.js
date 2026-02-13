@@ -93,7 +93,7 @@ app.post('/sync_user', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 2: WEBHOOK (Con lógica de Pre-Creación)
+// RUTA 2: WEBHOOK (Alta y Baja automática)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
@@ -111,6 +111,7 @@ app.post('/webhook', async (req, res) => {
 
             console.log(`🔔 Webhook: ${payerEmail} | Estado: ${status}`);
 
+            // CASO 1: ALTA DE SUSCRIPCIÓN (Authorized)
             if (status === 'authorized' && payerEmail) {
                 let nuevoPlan = 'pro';
                 if (reason && reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
@@ -119,7 +120,7 @@ app.post('/webhook', async (req, res) => {
                 let user = await User.findOne({ email: payerEmail });
 
                 if (user) {
-                    // CASO A: Usuario existente -> Actualizamos
+                    // Usuario existente -> Lo hacemos PRO
                     user.isPro = true;
                     user.planType = nuevoPlan;
                     user.subscriptionId = data.id;
@@ -127,7 +128,7 @@ app.post('/webhook', async (req, res) => {
                     await user.save();
                     console.log(`✅ Usuario existente ${payerEmail} actualizado a PRO.`);
                 } else {
-                    // CASO B: Usuario Web -> PRE-CREAMOS
+                    // Usuario Web (No tiene App aún) -> Lo PRE-CREAMOS
                     const newUser = new User({
                         uid: null, 
                         email: payerEmail,
@@ -140,6 +141,25 @@ app.post('/webhook', async (req, res) => {
                     });
                     await newUser.save();
                     console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}`);
+                }
+            }
+
+            // CASO 2: BAJA DE SUSCRIPCIÓN (Cancelled o Paused)
+            if ((status === 'cancelled' || status === 'paused') && payerEmail) {
+                const userBaja = await User.findOneAndUpdate(
+                    { email: payerEmail },
+                    { 
+                        isPro: false, 
+                        planType: 'free',
+                        updatedAt: new Date()
+                    },
+                    { new: true }
+                );
+
+                if (userBaja) {
+                    console.log(`❌ Suscripción cancelada/pausada para ${payerEmail}. Vuelve a FREE.`);
+                } else {
+                    console.log(`⚠️ Llegó baja para ${payerEmail} pero el usuario no existe en la DB.`);
                 }
             }
         }
