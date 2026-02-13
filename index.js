@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { MercadoPagoConfig, PreApproval } = require('mercadopago');
 const mongoose = require('mongoose');
-const cors = require('cors'); // Recomendado si llamás desde web, opcional si solo es app/webhook
+const cors = require('cors');
 
 const app = express();
 app.use(express.json());
@@ -26,9 +26,17 @@ const UserSchema = new mongoose.Schema({
     lat: Number,
     lng: Number
   },
-  planType: { type: String, default: 'free' }, // 'free', 'pro', 'black'
-  updatedAt: Date
+  planType: { type: String, default: 'free' },
+  updatedAt: Date,
+  createdAt: Date,
+  
+  // --- NUEVO: ESTADÍSTICAS ---
+  stats: {
+    delivered: { type: Number, default: 0 },
+    failed: { type: Number, default: 0 }
+  }
 });
+
 const User = mongoose.model('User', UserSchema);
 
 // CONFIG MERCADO PAGO
@@ -45,7 +53,13 @@ app.post('/sync_user', async (req, res) => {
 
     if (!user) {
       // CASO 1: Usuario nuevo total (No pagó, no existe) -> Lo creamos Free
-      user = new User({ uid, email, displayName, isPro: false });
+      user = new User({ 
+          uid, 
+          email, 
+          displayName, 
+          isPro: false,
+          stats: { delivered: 0, failed: 0 } // Inicializamos stats
+      });
       await user.save();
       console.log(`🆕 Nuevo usuario App: ${email}`);
     } else {
@@ -64,12 +78,13 @@ app.post('/sync_user', async (req, res) => {
       await user.save();
     }
     
-    // Devolvemos el estado REAL (Si el webhook lo puso PRO, acá devolvemos true)
+    // Devolvemos el estado REAL + LAS ESTADÍSTICAS
     res.json({ 
         success: true, 
         isPro: user.isPro, 
         planType: user.planType,
-        homeAddress: user.homeAddress 
+        homeAddress: user.homeAddress,
+        stats: user.stats || { delivered: 0, failed: 0 } // <--- ESTO ES IMPORTANTE PARA TU PERFIL
     });
   } catch (error) {
     console.error("Error Mongo Sync:", error);
@@ -88,7 +103,6 @@ app.post('/webhook', async (req, res) => {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
             
-            // Debug: Si el mail viene vacío, esto nos va a mostrar qué está llegando
             if (!sub.payer_email) console.log("DATAZO MP:", JSON.stringify(sub, null, 2));
 
             const status = sub.status;      
@@ -101,11 +115,11 @@ app.post('/webhook', async (req, res) => {
                 let nuevoPlan = 'pro';
                 if (reason && reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
 
-                // 1. Buscamos si el usuario YA existe
+                // Buscamos si el usuario YA existe
                 let user = await User.findOne({ email: payerEmail });
 
                 if (user) {
-                    // CASO A: El usuario ya usaba la app -> Lo actualizamos
+                    // CASO A: Usuario existente -> Actualizamos
                     user.isPro = true;
                     user.planType = nuevoPlan;
                     user.subscriptionId = data.id;
@@ -113,18 +127,19 @@ app.post('/webhook', async (req, res) => {
                     await user.save();
                     console.log(`✅ Usuario existente ${payerEmail} actualizado a PRO.`);
                 } else {
-                    // CASO B (EL TUYO): Pagó desde la web y nunca entró a la app -> LO CREAMOS
+                    // CASO B: Usuario Web -> PRE-CREAMOS
                     const newUser = new User({
-                        uid: null, // Todavía no tiene UID de Firebase
+                        uid: null, 
                         email: payerEmail,
-                        displayName: 'Usuario Web (Pendiente)', // Nombre temporal
+                        displayName: 'Usuario Web (Pendiente)', 
                         isPro: true,
                         planType: nuevoPlan,
                         subscriptionId: data.id,
-                        createdAt: new Date()
+                        createdAt: new Date(),
+                        stats: { delivered: 0, failed: 0 }
                     });
                     await newUser.save();
-                    console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}. Esperando que baje la app...`);
+                    console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}`);
                 }
             }
         }
@@ -146,6 +161,28 @@ app.post('/update_profile', async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---------------------------------------------------------
+// RUTA 4: REPORTAR ENTREGA (NUEVO) 📊
+// ---------------------------------------------------------
+app.post('/report_delivery', async (req, res) => {
+    const { email, status } = req.body; // status: 'DONE' o 'FAILED'
+
+    try {
+        const updateField = status === 'DONE' ? 'stats.delivered' : 'stats.failed';
+        
+        await User.findOneAndUpdate(
+            { email },
+            { $inc: { [updateField]: 1 } } // Incrementa +1
+        );
+        
+        console.log(`📊 Stats actualizadas para ${email}: ${status}`);
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Error reportando entrega:", error);
+        res.status(500).json({ error: "Error de servidor" });
+    }
 });
 
 const port = process.env.PORT || 3000;
