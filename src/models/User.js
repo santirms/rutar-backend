@@ -7,6 +7,8 @@ const UserSchema = new mongoose.Schema({
   // CORRECCIÓN AQUÍ 👇: Usamos displayName y quitamos el 'required' estricto de name
   displayName: String, 
   
+  photoURL: String,
+
   isPro: { type: Boolean, default: false },
   subscriptionId: String,
   lastLogin: Date,

@@ -37,15 +37,19 @@ app.post('/sync_user', async (req, res) => {
     if (!user) {
       // Usuario Nuevo
       user = new User({ 
-          uid, email, displayName, 
+          uid, email, displayName, photoURL,
           isPro: false,
           stats: { delivered: 0, failed: 0 }
       });
       await user.save();
       console.log(`🆕 Nuevo usuario creado: ${email}`);
     } else {
-      // Usuario Existente: Actualizamos datos básicos
-      if (!user.uid) { user.uid = uid; user.displayName = displayName || user.displayName; }
+      // USUARIO EXISTENTE
+      if (!user.uid) user.uid = uid;
+      
+      // Actualizamos nombre y foto si vienen nuevos
+      if (displayName) user.displayName = displayName;
+      if (photoURL) user.photoURL = photoURL; // <--- Actualizamos la foto al loguearse
       user.lastLogin = new Date();
       await user.save();
     }
@@ -117,7 +121,7 @@ app.post('/check_optimization', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 4: WEBHOOK MERCADO PAGO
+// RUTA 4: WEBHOOK MERCADO PAGO (Versión Debug Mejorada)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
@@ -127,14 +131,27 @@ app.post('/webhook', async (req, res) => {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
             
-            const status = sub.status;      
-            const payerEmail = sub.payer_email; 
+            // 🔍 DEBUG: ¡Vamos a ver qué demonios nos manda MP!
+            console.log("📦 DATA SUSCRIPCIÓN MP:", JSON.stringify(sub, null, 2));
+
+            const status = sub.status;
+            
+            // INTELIGENCIA PARA ENCONTRAR EL EMAIL 🧠
+            // A veces viene en payer_email, a veces dentro de payer.email
+            const payerEmail = sub.payer_email || (sub.payer && sub.payer.email);
+            
             const reason = sub.reason;      
 
-            console.log(`🔔 Webhook: ${payerEmail} | Estado: ${status}`);
+            console.log(`🔔 Webhook Procesado: ${payerEmail} | Estado: ${status}`);
+
+            // Si después de todo no hay email, no podemos hacer nada
+            if (!payerEmail) {
+                console.log("⚠️ ALERTA: Llegó una suscripción PERO NO TIENE EMAIL. No se puede vincular.");
+                return res.sendStatus(200);
+            }
 
             // CASO A: ALTA (Authorized)
-            if (status === 'authorized' && payerEmail) {
+            if (status === 'authorized') {
                 let nuevoPlan = 'pro';
                 if (reason && reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
 
@@ -166,7 +183,7 @@ app.post('/webhook', async (req, res) => {
             }
 
             // CASO B: BAJA (Cancelled / Paused)
-            if ((status === 'cancelled' || status === 'paused') && payerEmail) {
+            if (status === 'cancelled' || status === 'paused') {
                 await User.findOneAndUpdate(
                     { email: payerEmail },
                     { 
