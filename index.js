@@ -6,7 +6,7 @@ const cors = require('cors');
 
 // --- IMPORTAMOS LOS MODELOS ---
 // Asegurate de que Stop.js esté en la carpeta models
-const Stop = require('./models/Stop'); 
+const Stop = require('./src/models/Stop'); 
 
 const app = express();
 app.use(express.json());
