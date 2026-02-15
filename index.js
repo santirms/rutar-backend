@@ -1,8 +1,10 @@
-require('dotenv').config();
 const express = require('express');
-const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
 const mongoose = require('mongoose');
 const cors = require('cors');
+
+const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
+
+require('dotenv').config();
 
 // 👇 IMPORTACIONES LOCALES
 // Ajusta las rutas según tu estructura real.
@@ -121,62 +123,51 @@ app.post('/check_optimization', async (req, res) => {
 });
 
 // ---------------------------------------------------------
-// RUTA 4: WEBHOOK MERCADO PAGO (Versión Definitiva "Manual") 🔧
+// RUTA 4: WEBHOOK (Versión "Cazador de Pagos" 🏹)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
-    const { type, data } = req.body;
+    // A veces MP manda 'data.id', a veces manda el ID en 'data' directo, o por query.
+    // Normalizamos para encontrar el ID y el Tipo.
+    const body = req.body;
+    const query = req.query;
     
-    console.log(`📨 Webhook recibido: ${type} | ID: ${data?.id}`);
+    // Prioridad 1: Tipo en el body (JSON). Prioridad 2: Topic en la URL.
+    const type = body.type || query.topic; 
+    const dataId = body.data?.id || body.id || query.id;
+
+    console.log(`📨 Webhook recibido: ${type} | ID: ${dataId}`);
 
     try {
-        // CASO 1: SE APROBÓ UN PAGO DE SUSCRIPCIÓN
-        // (Usamos fetch manual porque el SDK falla con estos IDs)
-        if (type === 'subscription_authorized_payment') {
+        // CASO 1: ES UN PAGO REAL (Sea suscripción o pago único)
+        if (type === 'payment') {
+            const paymentClient = new Payment(client);
+            const payment = await paymentClient.get({ id: dataId });
             
-            // 1. Consultamos la API manual a la ruta correcta
-            const url = `https://api.mercadopago.com/authorized_payments/${data.id}`;
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}` // Asegurate que esta variable de entorno esté bien
-                }
-            });
-
-            if (!response.ok) {
-                console.log(`❌ Error API MP: ${response.status} ${response.statusText}`);
-                return res.sendStatus(200);
-            }
-
-            const paymentData = await response.json();
+            // AQUI ESTÁ LA MAGIA: Buscamos external_reference (lo que pusimos en el modal)
+            const emailReferencia = payment.external_reference;
+            const emailPagador = payment.payer.email;
+            const status = payment.status;
             
-            // 2. Buscamos el email en varios lugares (Prioridad: External Reference)
-            // A veces viene en paymentData.payment.external_reference o en paymentData.external_reference
-            const emailReference = paymentData.external_reference || 
-                                   (paymentData.payment && paymentData.payment.external_reference);
-            
-            // Si no hay referencia, usamos el mail del pagador real
-            const payerEmail = emailReference || 
-                               (paymentData.payer && paymentData.payer.email) ||
-                               (paymentData.payment && paymentData.payment.payer && paymentData.payment.payer.email);
+            // El email definitivo es: La referencia (prioridad) O el email de la tarjeta
+            const emailFinal = emailReferencia || emailPagador;
 
-            const status = paymentData.payment ? paymentData.payment.status : paymentData.status;
+            console.log(`💰 Pago Detectado (${status}) | Ref: ${emailReferencia} | Payer: ${emailPagador}`);
 
-            console.log(`💰 Pago Autorizado: ${status} | Email detectado: ${payerEmail}`);
-
-            // 3. Activamos al usuario si está aprobado
-            if ((status === 'approved' || status === 'authorized') && payerEmail) {
-                let user = await User.findOne({ email: payerEmail });
+            if (status === 'approved' && emailFinal) {
+                // Lógica de activación
+                let user = await User.findOne({ email: emailFinal });
 
                 if (user) {
                     user.isPro = true;
-                    user.planType = 'pro';
+                    user.planType = 'pro'; // O 'black' según el monto payment.transaction_amount
                     user.updatedAt = new Date();
                     await user.save();
-                    console.log(`✅ ${payerEmail} actualizado a PRO (vía Pago Autorizado)`);
+                    console.log(`✅ USUARIO ACTIVADO: ${emailFinal}`);
                 } else {
+                    // Crear usuario "fantasma" esperando que se registre
                     const newUser = new User({
                         uid: null, 
-                        email: payerEmail, 
+                        email: emailFinal, 
                         displayName: 'Usuario Web', 
                         photoURL: "",
                         isPro: true, 
@@ -185,47 +176,36 @@ app.post('/webhook', async (req, res) => {
                         stats: { delivered: 0, failed: 0 }
                     });
                     await newUser.save();
-                    console.log(`🆕 Usuario Web CREADO: ${payerEmail}`);
+                    console.log(`🆕 USUARIO CREADO (Pago Web): ${emailFinal}`);
                 }
             }
         }
 
-        // CASO 2: BAJAS O PAUSAS (Suscripción Pura)
-        // Esto sí lo maneja bien el SDK porque es un PreApproval
+        // CASO 2: BAJAS DE SUSCRIPCIÓN (Esto sigue igual)
         if (type === 'subscription_preapproval') {
             const preapproval = new PreApproval(client);
-            const sub = await preapproval.get({ id: data.id });
+            const sub = await preapproval.get({ id: dataId });
             
-            const status = sub.status;
-            // Intentamos leer el email
-            const email = sub.external_reference || sub.payer_email;
-
-            console.log(`📋 Suscripción Estado: ${status} | Email: ${email}`);
-
-            if (status === 'cancelled' || status === 'paused') {
-                let query = {};
+            if (sub.status === 'cancelled' || sub.status === 'paused') {
+                const email = sub.external_reference || sub.payer_email;
+                console.log(`📉 Baja detectada para: ${email}`);
+                
                 if (email) {
-                    query = { email: email };
-                } else {
-                    // Si falla el email, buscamos por ID de suscripción si lo guardaste antes
-                    // Ojo: Si no guardamos subscriptionId en el usuario, esto no encontrará nada.
-                    console.log(`⚠️ Baja sin email. ID: ${data.id}`);
-                    return res.sendStatus(200);
-                }
-
-                const user = await User.findOne(query);
-                if (user) {
-                    user.isPro = false;
-                    user.planType = 'free';
-                    await user.save();
-                    console.log(`❌ Usuario ${user.email} dado de BAJA.`);
+                    const user = await User.findOne({ email: email });
+                    if (user) {
+                        user.isPro = false;
+                        user.planType = 'free';
+                        await user.save();
+                        console.log("❌ Usuario pasado a FREE.");
+                    }
                 }
             }
         }
 
         res.sendStatus(200);
     } catch (error) {
-        console.error("❌ Error General Webhook:", error);
+        console.error("❌ Error Webhook:", error.message);
+        // Respondemos 200 igual para que MP no se enoje
         res.sendStatus(200);
     }
 });
