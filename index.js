@@ -33,37 +33,51 @@ const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN 
 // ---------------------------------------------------------
 app.post('/sync_user', async (req, res) => {
   const { uid, email, displayName, photoURL } = req.body;
+  
   try {
     let user = await User.findOne({ email });
 
     if (!user) {
-      // Usuario Nuevo
+      // CASO A: USUARIO NUEVO (Nunca pagó, nunca entró)
+      // Creamos uno desde cero
       user = new User({ 
-          uid, email, displayName, photoURL,
+          uid, 
+          email, 
+          displayName: displayName || 'Usuario App', // Por si Google no manda nombre
+          photoURL: photoURL || '',
           isPro: false,
+          planType: 'free', // <--- AGREGADO: Importante definirlo explícitamente
           stats: { delivered: 0, failed: 0 }
       });
       await user.save();
       console.log(`🆕 Nuevo usuario creado: ${email}`);
+
     } else {
-      // USUARIO EXISTENTE
-      if (!user.uid) user.uid = uid;
+      // CASO B: USUARIO EXISTENTE (O el "Fantasma" que pagó por Web)
       
-      // Actualizamos nombre y foto si vienen nuevos
+      // 1. LA FUSIÓN: Si existe el email pero no tenía UID (era del Webhook), se lo ponemos.
+      if (!user.uid) {
+          console.log(`🔗 Vinculando pago web a cuenta App: ${email}`);
+          user.uid = uid;
+      }
+      
+      // 2. Actualizamos datos estéticos (si vienen nuevos)
       if (displayName) user.displayName = displayName;
-      if (photoURL) user.photoURL = photoURL; // <--- Actualizamos la foto al loguearse
+      if (photoURL) user.photoURL = photoURL;
+      
       user.lastLogin = new Date();
-      await user.save();
+      await user.save(); // Al guardar, MANTIENE el isPro que tenía (sea true o false)
     }
     
     // Devolvemos todo al frontend
     res.json({ 
         success: true, 
         isPro: user.isPro, 
-        planType: user.planType,
+        planType: user.planType || 'free', // Protección anti-null
         homeAddress: user.homeAddress,
         stats: user.stats || { delivered: 0, failed: 0 }
     });
+
   } catch (error) {
     console.error("Error Mongo Sync:", error);
     res.status(500).json({ error: "Error de base de datos" });
