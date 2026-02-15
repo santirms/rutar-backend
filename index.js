@@ -1,6 +1,6 @@
 require('dotenv').config();
 const express = require('express');
-const { MercadoPagoConfig, PreApproval } = require('mercadopago');
+const { MercadoPagoConfig, PreApproval, Payment } = require('mercadopago');
 const mongoose = require('mongoose');
 const cors = require('cors');
 
@@ -120,84 +120,96 @@ app.post('/check_optimization', async (req, res) => {
     }
 });
 
+
 // ---------------------------------------------------------
-// RUTA 4: WEBHOOK MERCADO PAGO (Versión "Sherlock Holmes" 🕵️‍♂️)
+// RUTA 4: WEBHOOK MERCADO PAGO (Versión "Follow the Money" 💰)
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
+    
+    // Logueamos qué llegó para debug
+    console.log(`📨 Webhook recibido: ${type} | ID: ${data?.id}`);
 
     try {
+        // CASO 1: SE APROBÓ UN PAGO (Aquí sacamos el email real)
+        if (type === 'subscription_authorized_payment') {
+            const paymentClient = new Payment(client);
+            const payment = await paymentClient.get({ id: data.id });
+            
+            // Datos clave
+            const payerEmail = payment.payer.email;
+            const status = payment.status;
+            
+            // A veces el ID de suscripción viene en 'external_reference' del pago o en 'metadata'
+            // Pero lo más importante es vincular el EMAIL.
+            console.log(`💰 Pago detectado: ${status} | Email: ${payerEmail}`);
+
+            if (status === 'approved' && payerEmail) {
+                // Buscamos o creamos al usuario
+                let user = await User.findOne({ email: payerEmail });
+
+                if (user) {
+                    user.isPro = true;
+                    user.planType = 'pro';
+                    user.updatedAt = new Date();
+                    await user.save();
+                    console.log(`✅ ${payerEmail} actualizado a PRO (vía Pago)`);
+                } else {
+                    // Si el usuario pagó pero no se registró en la app todavía
+                    const newUser = new User({
+                        uid: null, 
+                        email: payerEmail, 
+                        displayName: 'Usuario Web', 
+                        photoURL: "",
+                        isPro: true, 
+                        planType: 'pro', 
+                        createdAt: new Date(), 
+                        stats: { delivered: 0, failed: 0 }
+                    });
+                    await newUser.save();
+                    console.log(`🆕 Usuario Web CREADO: ${payerEmail} (vía Pago)`);
+                }
+            }
+        }
+
+        // CASO 2: NOVEDADES DE LA SUSCRIPCIÓN (Para bajas o pausas)
         if (type === 'subscription_preapproval') {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
             
             const status = sub.status;
-            
-            // 1. Intentamos buscar el Email (Reference -> Payer Email -> Payer Obj)
-            const payerEmail = sub.external_reference || sub.payer_email || (sub.payer && sub.payer.email);
-            
-            console.log(`🔔 Webhook: ${status} | Email detectado: ${payerEmail} | ID: ${data.id}`);
+            // Intentamos leer el email por si acaso viene
+            const payerEmail = sub.payer_email || (sub.payer && sub.payer.email) || sub.external_reference;
 
-            // CASO A: ALTA (Authorized)
-            if (status === 'authorized') {
-                if (!payerEmail) {
-                    console.log("⚠️ ALERTA: Alta sin email. No se puede vincular.");
-                    return res.sendStatus(200);
-                }
+            console.log(`📋 Suscripción: ${status} | Email en contrato: ${payerEmail || 'No detectado'}`);
 
-                let nuevoPlan = 'pro';
-                if (sub.reason && sub.reason.toUpperCase().includes('BLACK')) nuevoPlan = 'black';
-
-                let user = await User.findOne({ email: payerEmail });
-                
-                if (user) {
-                    user.isPro = true;
-                    user.planType = nuevoPlan;
-                    user.subscriptionId = data.id; // Guardamos el ID para futuras cancelaciones
-                    user.updatedAt = new Date();
-                    await user.save();
-                    console.log(`✅ ${payerEmail} actualizado a PRO`);
-                } else {
-                    // Usuario Web
-                    const newUser = new User({
-                        uid: null, email: payerEmail, displayName: 'Usuario Web', 
-                        photoURL: "", // Agregamos campo vacío para evitar errores
-                        isPro: true, planType: nuevoPlan, subscriptionId: data.id, 
-                        createdAt: new Date(), stats: { delivered: 0, failed: 0 }
-                    });
-                    await newUser.save();
-                    console.log(`🆕 Usuario Web PRE-CREADO: ${payerEmail}`);
-                }
-            }
-
-            // CASO B: BAJA (Cancelled / Paused)
+            // Solo nos importan las BAJAS aquí (las altas las manejamos arriba con el pago)
             if (status === 'cancelled' || status === 'paused') {
-                // ESTRATEGIA DOBLE: Buscamos por Email O por ID de suscripción 🧠
                 let query = {};
                 if (payerEmail) {
                     query = { email: payerEmail };
                 } else {
-                    // Si no hay email (tu caso actual), buscamos quien tiene este ID guardado
-                    query = { subscriptionId: data.id };
-                    console.log(`🔎 Buscando usuario por ID de suscripción: ${data.id}`);
+                    // Si no hay email, buscamos por ID de suscripción (si lo hubiéramos guardado)
+                    // O simplemente logueamos el error
+                    console.log(`⚠️ Baja recibida sin email. ID Suscripción: ${data.id}`);
+                    return res.sendStatus(200);
                 }
 
                 const user = await User.findOne(query);
-
                 if (user) {
                     user.isPro = false;
                     user.planType = 'free';
                     user.updatedAt = new Date();
                     await user.save();
                     console.log(`❌ Usuario ${user.email} volvió a FREE (Baja detectada).`);
-                } else {
-                    console.log("⚠️ No se encontró usuario para dar de baja.");
                 }
             }
         }
+
         res.sendStatus(200);
     } catch (error) {
         console.error("❌ Error en Webhook:", error);
+        // Respondemos 200 para que MP no siga reintentando
         res.sendStatus(200);
     }
 });
