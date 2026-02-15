@@ -120,32 +120,51 @@ app.post('/check_optimization', async (req, res) => {
     }
 });
 
-
 // ---------------------------------------------------------
-// RUTA 4: WEBHOOK MERCADO PAGO (Versión "Follow the Money" 💰)
+// RUTA 4: WEBHOOK MERCADO PAGO (Versión Definitiva "Manual") 🔧
 // ---------------------------------------------------------
 app.post('/webhook', async (req, res) => {
     const { type, data } = req.body;
     
-    // Logueamos qué llegó para debug
     console.log(`📨 Webhook recibido: ${type} | ID: ${data?.id}`);
 
     try {
-        // CASO 1: SE APROBÓ UN PAGO (Aquí sacamos el email real)
+        // CASO 1: SE APROBÓ UN PAGO DE SUSCRIPCIÓN
+        // (Usamos fetch manual porque el SDK falla con estos IDs)
         if (type === 'subscription_authorized_payment') {
-            const paymentClient = new Payment(client);
-            const payment = await paymentClient.get({ id: data.id });
             
-            // Datos clave
-            const payerEmail = payment.payer.email;
-            const status = payment.status;
-            
-            // A veces el ID de suscripción viene en 'external_reference' del pago o en 'metadata'
-            // Pero lo más importante es vincular el EMAIL.
-            console.log(`💰 Pago detectado: ${status} | Email: ${payerEmail}`);
+            // 1. Consultamos la API manual a la ruta correcta
+            const url = `https://api.mercadopago.com/authorized_payments/${data.id}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${process.env.MP_ACCESS_TOKEN}` // Asegurate que esta variable de entorno esté bien
+                }
+            });
 
-            if (status === 'approved' && payerEmail) {
-                // Buscamos o creamos al usuario
+            if (!response.ok) {
+                console.log(`❌ Error API MP: ${response.status} ${response.statusText}`);
+                return res.sendStatus(200);
+            }
+
+            const paymentData = await response.json();
+            
+            // 2. Buscamos el email en varios lugares (Prioridad: External Reference)
+            // A veces viene en paymentData.payment.external_reference o en paymentData.external_reference
+            const emailReference = paymentData.external_reference || 
+                                   (paymentData.payment && paymentData.payment.external_reference);
+            
+            // Si no hay referencia, usamos el mail del pagador real
+            const payerEmail = emailReference || 
+                               (paymentData.payer && paymentData.payer.email) ||
+                               (paymentData.payment && paymentData.payment.payer && paymentData.payment.payer.email);
+
+            const status = paymentData.payment ? paymentData.payment.status : paymentData.status;
+
+            console.log(`💰 Pago Autorizado: ${status} | Email detectado: ${payerEmail}`);
+
+            // 3. Activamos al usuario si está aprobado
+            if ((status === 'approved' || status === 'authorized') && payerEmail) {
                 let user = await User.findOne({ email: payerEmail });
 
                 if (user) {
@@ -153,9 +172,8 @@ app.post('/webhook', async (req, res) => {
                     user.planType = 'pro';
                     user.updatedAt = new Date();
                     await user.save();
-                    console.log(`✅ ${payerEmail} actualizado a PRO (vía Pago)`);
+                    console.log(`✅ ${payerEmail} actualizado a PRO (vía Pago Autorizado)`);
                 } else {
-                    // Si el usuario pagó pero no se registró en la app todavía
                     const newUser = new User({
                         uid: null, 
                         email: payerEmail, 
@@ -167,31 +185,31 @@ app.post('/webhook', async (req, res) => {
                         stats: { delivered: 0, failed: 0 }
                     });
                     await newUser.save();
-                    console.log(`🆕 Usuario Web CREADO: ${payerEmail} (vía Pago)`);
+                    console.log(`🆕 Usuario Web CREADO: ${payerEmail}`);
                 }
             }
         }
 
-        // CASO 2: NOVEDADES DE LA SUSCRIPCIÓN (Para bajas o pausas)
+        // CASO 2: BAJAS O PAUSAS (Suscripción Pura)
+        // Esto sí lo maneja bien el SDK porque es un PreApproval
         if (type === 'subscription_preapproval') {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: data.id });
             
             const status = sub.status;
-            // Intentamos leer el email por si acaso viene
-            const payerEmail = sub.payer_email || (sub.payer && sub.payer.email) || sub.external_reference;
+            // Intentamos leer el email
+            const email = sub.external_reference || sub.payer_email;
 
-            console.log(`📋 Suscripción: ${status} | Email en contrato: ${payerEmail || 'No detectado'}`);
+            console.log(`📋 Suscripción Estado: ${status} | Email: ${email}`);
 
-            // Solo nos importan las BAJAS aquí (las altas las manejamos arriba con el pago)
             if (status === 'cancelled' || status === 'paused') {
                 let query = {};
-                if (payerEmail) {
-                    query = { email: payerEmail };
+                if (email) {
+                    query = { email: email };
                 } else {
-                    // Si no hay email, buscamos por ID de suscripción (si lo hubiéramos guardado)
-                    // O simplemente logueamos el error
-                    console.log(`⚠️ Baja recibida sin email. ID Suscripción: ${data.id}`);
+                    // Si falla el email, buscamos por ID de suscripción si lo guardaste antes
+                    // Ojo: Si no guardamos subscriptionId en el usuario, esto no encontrará nada.
+                    console.log(`⚠️ Baja sin email. ID: ${data.id}`);
                     return res.sendStatus(200);
                 }
 
@@ -199,17 +217,15 @@ app.post('/webhook', async (req, res) => {
                 if (user) {
                     user.isPro = false;
                     user.planType = 'free';
-                    user.updatedAt = new Date();
                     await user.save();
-                    console.log(`❌ Usuario ${user.email} volvió a FREE (Baja detectada).`);
+                    console.log(`❌ Usuario ${user.email} dado de BAJA.`);
                 }
             }
         }
 
         res.sendStatus(200);
     } catch (error) {
-        console.error("❌ Error en Webhook:", error);
-        // Respondemos 200 para que MP no siga reintentando
+        console.error("❌ Error General Webhook:", error);
         res.sendStatus(200);
     }
 });
