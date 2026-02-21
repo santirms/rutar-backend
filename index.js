@@ -101,10 +101,7 @@ app.post('/check_optimization', async (req, res) => {
         const user = await User.findOne({ email });
         if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
-        // Si es PRO, pase libre
-        if (user.isPro) return res.json({ allowed: true, msg: "PRO ilimitado" });
-
-        // Lógica de reseteo diario
+        // 1. Lógica de reseteo diario (Para TODOS)
         const hoy = new Date();
         const ultimoUso = user.lastOptimizationDate ? new Date(user.lastOptimizationDate) : null;
         
@@ -113,22 +110,26 @@ app.post('/check_optimization', async (req, res) => {
                            hoy.getMonth() === ultimoUso.getMonth() && 
                            hoy.getFullYear() === ultimoUso.getFullYear();
 
-        if (!esMismoDia) {
-            user.dailyOptimizations = 0; // Nuevo día, contador a 0
+        let nuevoContador = esMismoDia ? user.dailyOptimizations : 0;
+
+        // 2. Definimos el límite según el tipo de cuenta 👈 (NUEVA LÓGICA)
+        const limiteDiario = user.isPro ? 5 : 1;
+
+        // 3. Chequeo de límite para CUALQUIERA
+        if (nuevoContador >= limiteDiario) {
+            return res.json({ 
+                allowed: false, 
+                msg: `Límite diario de ${limiteDiario} optimizaciones alcanzado` 
+            });
         }
 
-        // Chequeo de límite (1 por día para Free)
-        if (user.dailyOptimizations >= 1) {
-            return res.json({ allowed: false, msg: "Límite diario alcanzado" });
-        }
-
-        // Si pasa, descontamos
-        user.dailyOptimizations += 1;
+        // 4. Si pasa, sumamos el uso y guardamos
+        user.dailyOptimizations = nuevoContador + 1;
         user.lastOptimizationDate = new Date();
         await user.save();
 
-        console.log(`📉 Optimización usada por ${email}. Total hoy: ${user.dailyOptimizations}`);
-        res.json({ allowed: true, usage: user.dailyOptimizations });
+        console.log(`📉 Optimizando: ${email} | Uso de hoy: ${user.dailyOptimizations}/${limiteDiario} | PRO: ${user.isPro}`);
+        res.json({ allowed: true, usage: user.dailyOptimizations, limit: limiteDiario });
 
     } catch (error) {
         console.error("Error check_optimization:", error);
@@ -195,13 +196,15 @@ app.post('/webhook', async (req, res) => {
             }
         }
 
-        // CASO 2: BAJAS DE SUSCRIPCIÓN (Esto sigue igual)
+       // CASO 2: BAJAS DE SUSCRIPCIÓN
         if (type === 'subscription_preapproval') {
             const preapproval = new PreApproval(client);
             const sub = await preapproval.get({ id: dataId });
             
             if (sub.status === 'cancelled' || sub.status === 'paused') {
-                const email = sub.external_reference || sub.payer_email;
+                // Buscamos el email en todas las guaridas posibles de Mercado Pago
+                const email = sub.external_reference || sub.payer_email || (sub.payer && sub.payer.email);
+                
                 console.log(`📉 Baja detectada para: ${email}`);
                 
                 if (email) {
@@ -210,8 +213,13 @@ app.post('/webhook', async (req, res) => {
                         user.isPro = false;
                         user.planType = 'free';
                         await user.save();
-                        console.log("❌ Usuario pasado a FREE.");
+                        console.log(`❌ Usuario ${email} pasado a FREE.`);
+                    } else {
+                        console.log(`⚠️ Se dio de baja en MP, pero no encontré el usuario ${email} en Mongo.`);
                     }
+                } else {
+                    // Si Mercado Pago no mandó el email, imprimimos la data cruda para investigar
+                    console.log("⚠️ Webhook de baja recibido sin email. Datos crudos de MP:", JSON.stringify(sub, null, 2));
                 }
             }
         }
