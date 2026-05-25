@@ -245,5 +245,62 @@ app.post('/update_profile', async (req, res) => {
   }
 });
 
+// RUTA 6: OPTIMIZAR RUTA (Route Optimization API)
+const { GoogleAuth } = require('google-auth-library');
+
+app.post('/api/optimize', async (req, res) => {
+  try {
+    const { paradas, origin } = req.body;
+
+    if (!paradas || !paradas.length) {
+      return res.status(400).json({ error: 'paradas requeridas' });
+    }
+
+    const auth = new GoogleAuth({
+      credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+
+    const shipments = paradas.map((p) => ({
+      deliveries: [{ arrivalLocation: { latitude: p.lat, longitude: p.lng } }]
+    }));
+
+    const body = {
+      model: {
+        shipments,
+        vehicles: [{
+          startLocation: { latitude: origin.lat, longitude: origin.lng },
+          endLocation: { latitude: origin.lat, longitude: origin.lng },
+          costPerKilometer: 1.0,
+        }]
+      }
+    };
+
+    const PROJECT_ID = process.env.GOOGLE_PROJECT_ID;
+    const url = `https://routeoptimization.googleapis.com/v1/projects/${PROJECT_ID}:optimizeTours`;
+
+    const response = await require('axios').post(url, body, {
+      headers: { Authorization: `Bearer ${token.token}`, 'Content-Type': 'application/json' }
+    });
+
+    const visits = response.data.routes?.[0]?.visits || [];
+    const orden = visits.map((v) => v.shipmentIndex ?? 0);
+
+    // Agregar índices faltantes
+    for (let i = 0; i < paradas.length; i++) {
+      if (!orden.includes(i)) orden.push(i);
+    }
+
+    res.json({ orden });
+
+  } catch (error) {
+    console.error('[Optimize] Error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Error optimizando ruta' });
+  }
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`🚀 Server RutAR corriendo en puerto ${port}`));
