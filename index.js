@@ -292,6 +292,9 @@ app.post('/api/optimize', async (req, res) => {
       // (si no, Google devuelve INVALID_ARGUMENT). Usamos "ahora" como inicio
       // y +12hs como fin, para cubrir una jornada de reparto completa sin
       // tener que saber de antemano cuánto va a durar la ruta.
+      // Google exige el timestamp sin fracción de segundo (nanos) acá —
+      // toISOString() de JS siempre agrega milisegundos, así que los recortamos.
+      const aTimestampSinNanos = (fecha) => fecha.toISOString().split('.')[0] + 'Z';
       const ahora = new Date();
       const finVentana = new Date(ahora.getTime() + 12 * 60 * 60 * 1000);
       body.model.globalStartTime = ahora.toISOString();
