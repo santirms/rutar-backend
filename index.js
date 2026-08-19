@@ -250,7 +250,7 @@ const { GoogleAuth } = require('google-auth-library');
 
 app.post('/api/optimize', async (req, res) => {
   try {
-    const { paradas, origin } = req.body;
+    const { paradas, origin, conDetalle } = req.body;
 
     if (!paradas || !paradas.length) {
       return res.status(400).json({ error: 'paradas requeridas' });
@@ -279,6 +279,15 @@ app.post('/api/optimize', async (req, res) => {
       }
     };
 
+    // Solo pedimos polylines/detalle si el caller lo pide explícitamente.
+    // La app Flutter no manda `conDetalle`, así que su request a Google
+    // queda idéntica a hoy — cero cambio de latencia, payload o costo
+    // para los usuarios de producción.
+    if (conDetalle) {
+      body.populatePolylines = true;
+      body.populateTransitionPolylines = true;
+    }
+
     const PROJECT_ID = process.env.GOOGLE_PROJECT_ID;
     const url = `https://routeoptimization.googleapis.com/v1/projects/${PROJECT_ID}:optimizeTours`;
 
@@ -286,7 +295,8 @@ app.post('/api/optimize', async (req, res) => {
       headers: { Authorization: `Bearer ${token.token}`, 'Content-Type': 'application/json' }
     });
 
-    const visits = response.data.routes?.[0]?.visits || [];
+    const ruta = response.data.routes?.[0] || {};
+    const visits = ruta.visits || [];
     const orden = visits.map((v) => v.shipmentIndex ?? 0);
 
     // Agregar índices faltantes
@@ -294,7 +304,24 @@ app.post('/api/optimize', async (req, res) => {
       if (!orden.includes(i)) orden.push(i);
     }
 
-    res.json({ orden });
+    const respuesta = { orden };
+
+    // Mismo motivo: si nadie pidió detalle, la respuesta queda { orden },
+    // igual que hoy — la app Flutter no ve ningún campo que no esperaba.
+    if (conDetalle) {
+      respuesta.routePolyline = ruta.routePolyline?.points || null;
+      respuesta.transitions = (ruta.transitions || []).map(t => ({
+        travelDurationSeconds: t.travelDuration ? parseInt(t.travelDuration) : null,
+        travelDistanceMeters: t.travelDistanceMeters ?? null,
+        routePolyline: t.routePolyline?.points || null,
+      }));
+      respuesta.metrics = response.data.metrics ? {
+        totalDurationSeconds: response.data.metrics.totalDuration ? parseInt(response.data.metrics.totalDuration) : null,
+        totalDistanceMeters: response.data.metrics.travelDistanceMeters ?? null,
+      } : null;
+    }
+
+    res.json(respuesta);
 
   } catch (error) {
     console.error('[Optimize] Error:', error.response?.data || error.message);
