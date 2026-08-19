@@ -297,8 +297,8 @@ app.post('/api/optimize', async (req, res) => {
       const aTimestampSinNanos = (fecha) => fecha.toISOString().split('.')[0] + 'Z';
       const ahora = new Date();
       const finVentana = new Date(ahora.getTime() + 12 * 60 * 60 * 1000);
-      body.model.globalStartTime = ahora.toISOString();
-      body.model.globalEndTime = finVentana.toISOString();
+      body.model.globalStartTime = aTimestampSinNanos(ahora);
+      body.model.globalEndTime = aTimestampSinNanos(finVentana);
     }
 
     const PROJECT_ID = process.env.GOOGLE_PROJECT_ID;
