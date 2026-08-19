@@ -286,6 +286,7 @@ app.post('/api/optimize', async (req, res) => {
     if (conDetalle) {
       body.populatePolylines = true;
       body.populateTransitionPolylines = true;
+      body.considerRoadTraffic = true;
     }
 
     const PROJECT_ID = process.env.GOOGLE_PROJECT_ID;
