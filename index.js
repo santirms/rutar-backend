@@ -273,7 +273,6 @@ app.post('/api/optimize', async (req, res) => {
         shipments,
         vehicles: [{
           startLocation: { latitude: origin.lat, longitude: origin.lng },
-          endLocation: { latitude: origin.lat, longitude: origin.lng },
           costPerKilometer: 1.0,
         }]
       }
