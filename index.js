@@ -250,7 +250,7 @@ const { GoogleAuth } = require('google-auth-library');
 
 app.post('/api/optimize', async (req, res) => {
   try {
-    const { paradas, origin, conDetalle } = req.body;
+    const { paradas, origin, conDetalle, destination } = req.body;
 
     if (!paradas || !paradas.length) {
       return res.status(400).json({ error: 'paradas requeridas' });
@@ -268,13 +268,24 @@ app.post('/api/optimize', async (req, res) => {
       deliveries: [{ arrivalLocation: { latitude: p.lat, longitude: p.lng } }]
     }));
 
+    const vehicle = {
+      startLocation: { latitude: origin.lat, longitude: origin.lng },
+      costPerKilometer: 1.0,
+    };
+
+    // Si el cliente mandó un destino explícito (Vuelta a Casa / Vuelta
+    // al Inicio), se lo pasamos a Route Optimization para que arme la
+    // ruta terminando ahí. Sin esto, Google elige el final que le
+    // convenga (típicamente la última parada) ignorando la preferencia
+    // del usuario.
+    if (destination && destination.lat != null && destination.lng != null) {
+      vehicle.endLocation = { latitude: destination.lat, longitude: destination.lng };
+    }
+
     const body = {
       model: {
         shipments,
-        vehicles: [{
-          startLocation: { latitude: origin.lat, longitude: origin.lng },
-          costPerKilometer: 1.0,
-        }]
+        vehicles: [vehicle]
       }
     };
 
