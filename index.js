@@ -338,10 +338,17 @@ app.post('/api/optimize', async (req, res) => {
         travelDistanceMeters: t.travelDistanceMeters ?? null,
         routePolyline: t.routePolyline?.points || null,
       }));
-      respuesta.metrics = response.data.metrics ? {
-        totalDurationSeconds: response.data.metrics.totalDuration ? parseInt(response.data.metrics.totalDuration) : null,
-        totalDistanceMeters: response.data.metrics.travelDistanceMeters ?? null,
-      } : null;
+      // Las métricas de la ruta vienen en routes[0].metrics (travelDuration,
+      // travelDistanceMeters). Si no están, sumamos los tramos.
+      const agg = ruta.metrics || {};
+      const sumaTramos = (ruta.transitions || []).reduce(
+        (acc, t) => acc + (t.travelDuration ? parseInt(t.travelDuration) : 0), 0);
+      const sumaDist = (ruta.transitions || []).reduce(
+        (acc, t) => acc + (t.travelDistanceMeters || 0), 0);
+      respuesta.metrics = {
+        totalDurationSeconds: agg.travelDuration ? parseInt(agg.travelDuration) : (sumaTramos || null),
+        totalDistanceMeters: agg.travelDistanceMeters ?? (sumaDist || null),
+      };
     }
 
     res.json(respuesta);
