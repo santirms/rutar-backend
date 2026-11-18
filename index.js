@@ -11,6 +11,7 @@ require('dotenv').config();
 // Si index.js está en la raíz, esto busca en carpeta src/
 const userController = require('./src/controllers/userController');
 const User = require('./src/models/User'); 
+const { verificarUsuario, verificarOptimize } = require('./src/middleware/auth');
 
 const app = express();
 app.use(express.json());
@@ -31,7 +32,7 @@ const client = new MercadoPagoConfig({ accessToken: process.env.MP_ACCESS_TOKEN 
 // ---------------------------------------------------------
 // RUTA 1: SINCRONIZAR USUARIO (Login / Inicio)
 // ---------------------------------------------------------
-app.post('/sync_user', async (req, res) => {
+app.post('/sync_user', verificarUsuario, async (req, res) => {
   const { uid, email, displayName, photoURL } = req.body;
   
   try {
@@ -88,13 +89,13 @@ app.post('/sync_user', async (req, res) => {
 // RUTA 2: GUARDAR ENTREGA
 // ---------------------------------------------------------
 // Conectamos la ruta con la función del archivo userController.js
-app.post('/save_stop', userController.saveStop); 
+app.post('/save_stop', verificarUsuario, userController.saveStop);
 
 
 // ---------------------------------------------------------
 // RUTA 3: CONTROL DE LÍMITES (Optimización)
 // ---------------------------------------------------------
-app.post('/check_optimization', async (req, res) => {
+app.post('/check_optimization', verificarUsuario, async (req, res) => {
     const { email } = req.body;
 
     try {
@@ -236,7 +237,7 @@ app.post('/webhook', async (req, res) => {
 // ---------------------------------------------------------
 // RUTA 5: UPDATE PROFILE (Dirección de casa)
 // ---------------------------------------------------------
-app.post('/update_profile', async (req, res) => {
+app.post('/update_profile', verificarUsuario, async (req, res) => {
   const { email, homeAddress } = req.body;
   try {
     await User.findOneAndUpdate({ email }, { homeAddress });
@@ -249,7 +250,7 @@ app.post('/update_profile', async (req, res) => {
 // RUTA 6: OPTIMIZAR RUTA (Route Optimization API)
 const { GoogleAuth } = require('google-auth-library');
 
-app.post('/api/optimize', async (req, res) => {
+app.post('/api/optimize', verificarOptimize, async (req, res) => {
   try {
     const { paradas, origin, conDetalle, destination } = req.body;
 
