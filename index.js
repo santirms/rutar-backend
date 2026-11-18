@@ -113,7 +113,8 @@ app.post('/check_optimization', async (req, res) => {
         let nuevoContador = esMismoDia ? user.dailyOptimizations : 0;
 
         // 2. Definimos el límite según el tipo de cuenta 👈 (NUEVA LÓGICA)
-        const limiteDiario = user.isPro ? 10 : 3;
+        const esEnterprise = user.planType === 'enterprise' || user.planType === 'black';
+        const limiteDiario = esEnterprise ? 30 : (user.isPro ? 10 : 3);
 
         // 3. Chequeo de límite para CUALQUIERA
         if (nuevoContador >= limiteDiario) {
