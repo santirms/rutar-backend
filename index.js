@@ -11,6 +11,7 @@ require('dotenv').config();
 // Si index.js está en la raíz, esto busca en carpeta src/
 const userController = require('./src/controllers/userController');
 const User = require('./src/models/User'); 
+const deviceLock = require('./src/utils/deviceLock');
 const { verificarUsuario, verificarOptimize } = require('./src/middleware/auth');
 
 const app = express();
@@ -50,6 +51,7 @@ app.post('/sync_user', verificarUsuario, async (req, res) => {
           planType: 'free', // <--- AGREGADO: Importante definirlo explícitamente
           stats: { delivered: 0, failed: 0 }
       });
+      if (req.body.claim === true) deviceLock.reclamar(user, deviceLock.leerDeviceId(req));
       await user.save();
       console.log(`🆕 Nuevo usuario creado: ${email}`);
 
@@ -67,6 +69,7 @@ app.post('/sync_user', verificarUsuario, async (req, res) => {
       if (photoURL) user.photoURL = photoURL;
       
       user.lastLogin = new Date();
+      if (req.body.claim === true) deviceLock.reclamar(user, deviceLock.leerDeviceId(req));
       await user.save(); // Al guardar, MANTIENE el isPro que tenía (sea true o false)
     }
     
@@ -101,6 +104,13 @@ app.post('/check_optimization', verificarUsuario, async (req, res) => {
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+        // 0. Un dispositivo por cuenta
+        const dev = deviceLock.validar(user, deviceLock.leerDeviceId(req), '/check_optimization');
+        if (dev.adopted) await user.save();
+        if (!dev.ok) {
+            return res.status(409).json({ error: 'DEVICE_CONFLICT', msg: 'Cuenta abierta en otro dispositivo' });
+        }
 
         // 1. Lógica de reseteo diario (Para TODOS)
         const hoy = new Date();
