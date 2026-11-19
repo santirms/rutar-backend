@@ -11,6 +11,7 @@
 //
 // Si el request trae token, SIEMPRE se verifica; un token inválido es 401,
 // y el email/uid del token pisan los que vengan en el body.
+// Para usuarios de email/contraseña sin verificar ver el comentario más abajo.
 //
 // Variables de entorno:
 //   FIREBASE_PROJECT_ID  (obligatoria) project_id de Firebase, el mismo que
@@ -52,10 +53,15 @@ async function verificarUsuario(req, res, next) {
     }
 
     // Con email/contraseña cualquiera puede registrar un mail ajeno sin
-    // verificarlo; en ese caso no confiamos en el email.
+    // verificarlo. En modo permisivo solo lo avisamos en los logs (la app
+    // todavía no manda el mail de verificación); con AUTH_REQUIRED=true se
+    // rechaza.
     const proveedor = decoded.firebase && decoded.firebase.sign_in_provider;
     if (proveedor === 'password' && !decoded.email_verified) {
-      return res.status(401).json({ error: 'Email no verificado' });
+      if (authRequired()) {
+        return res.status(401).json({ error: 'Email no verificado' });
+      }
+      console.warn(`⚠️ [auth] email SIN verificar (password): ${decoded.email} en ${req.path} (modo permisivo)`);
     }
 
     req.authUser = { uid: decoded.uid, email: decoded.email };
