@@ -12,6 +12,8 @@ const UserSchema = new mongoose.Schema({
   isPro: { type: Boolean, default: false },
   subscriptionId: String,
   lastLogin: Date,
+  activeDeviceId: { type: String, default: null },
+  activeDeviceSince: { type: Date, default: null },
   homeAddress: {
     description: String,
     lat: Number,
