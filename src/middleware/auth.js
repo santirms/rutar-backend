@@ -65,6 +65,9 @@ async function verificarUsuario(req, res, next) {
     }
 
     req.authUser = { uid: decoded.uid, email: decoded.email };
+    if (process.env.AUTH_DEBUG === 'true') {
+      console.log(`✅ [auth] ${decoded.email} ${req.path}`);
+    }
 
     // El token manda sobre lo que diga el body
     req.body = req.body || {};
