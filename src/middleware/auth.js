@@ -41,7 +41,7 @@ async function verificarUsuario(req, res, next) {
     if (authRequired()) {
       return res.status(401).json({ error: 'No autenticado' });
     }
-    console.warn(`⚠️ [auth] request SIN token a ${req.path} (modo permisivo)`);
+    console.warn(`⚠️ [auth] request SIN token a ${req.path} (modo permisivo) email=${(req.body && req.body.email) || '?'}`);
     return next();
   }
 
