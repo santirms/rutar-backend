@@ -83,6 +83,27 @@ app.post('/sync_user', verificarUsuario, async (req, res) => {
     });
 
   } catch (error) {
+    // Dos sync_user simultáneos de un usuario nuevo: el otro lo creó primero.
+    if (error.code === 11000) {
+      try {
+        const existente = await User.findOne({ email });
+        if (existente) {
+          if (req.body.claim === true) {
+            deviceLock.reclamar(existente, deviceLock.leerDeviceId(req));
+            await existente.save();
+          }
+          return res.json({
+            success: true,
+            isPro: existente.isPro,
+            planType: existente.planType || 'free',
+            homeAddress: existente.homeAddress,
+            stats: existente.stats || { delivered: 0, failed: 0 }
+          });
+        }
+      } catch (e2) {
+        console.error("Error Mongo Sync (reintento):", e2);
+      }
+    }
     console.error("Error Mongo Sync:", error);
     res.status(500).json({ error: "Error de base de datos" });
   }
